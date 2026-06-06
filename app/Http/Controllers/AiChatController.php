@@ -178,7 +178,7 @@ class AiChatController extends Controller
 
             $curlError = curl_errno($ch) ? curl_error($ch) : null;
             $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            unset($ch); // curl_close() deprecated since PHP 8.5; handle freed automatically on unset
 
             if ($curlError || ($httpCode && $httpCode >= 400)) {
                 Log::error('AiChat: Gemini streaming error', [
