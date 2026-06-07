@@ -66,7 +66,7 @@ class UserController extends Controller
                        ->get();
 
         return response()->json([
-            'users' => $users->map(fn($u) => $this->transformUser($u)),
+            'users' => $users->map(fn(User $u) => $this->transformUser($u)),
             'pagination' => [
                 'page' => $page,
                 'limit' => $limit,

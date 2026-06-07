@@ -12,6 +12,7 @@ use App\Http\Controllers\UserController;
 use App\Http\Controllers\StudentStatisticsController;
 use App\Http\Controllers\AnalyticsReportController;
 use App\Http\Controllers\AiChatController;
+use App\Http\Controllers\CartController;
 
 /*
 |--------------------------------------------------------------------------
@@ -90,6 +91,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/class-codes', [ClassCodeController::class, 'getAll']);
     Route::get('/class-codes/stats', [ClassCodeController::class, 'getStats']);
     Route::get('/class-codes/stream', [ClassCodeController::class, 'stream']);
+    Route::get('/class-codes/my-classes', [ClassCodeController::class, 'getMyClasses']);
     Route::get('/class-codes/{id}', [ClassCodeController::class, 'getById']);
     Route::post('/class-codes', [ClassCodeController::class, 'create']);
     Route::patch('/class-codes/{id}', [ClassCodeController::class, 'update']);
@@ -158,6 +160,13 @@ Route::middleware('jwt.auth')->group(function () {
     Route::post('/users', [UserController::class, 'create']);
     Route::patch('/users', [UserController::class, 'update']);
     Route::delete('/users', [UserController::class, 'delete']);
+
+    // Student Cart
+    Route::get('/cart/stream', [CartController::class, 'stream']);
+    Route::get('/cart', [CartController::class, 'getCart']);
+    Route::post('/cart', [CartController::class, 'addItem']);
+    Route::patch('/cart', [CartController::class, 'updateQuantity']);
+    Route::delete('/cart', [CartController::class, 'deleteFromCart']);
 });
 
 /*

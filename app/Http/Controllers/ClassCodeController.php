@@ -103,13 +103,50 @@ class ClassCodeController extends Controller
                          ->get();
 
         return response()->json([
-            'classCodes' => $classes->map(fn($c) => $this->transformClassCode($c)),
+            'classCodes' => $classes->map(fn(ClassCode $c) => $this->transformClassCode($c)),
             'pagination' => [
                 'page' => $page,
                 'limit' => $limit,
                 'total' => $total,
                 'totalPages' => $totalPages
             ]
+        ]);
+    }
+
+    /**
+     * GET /api/class-codes/my-classes
+     *
+     * Return only the class codes relevant to the authenticated user:
+     *   - Students  → classes they are enrolled in
+     *   - Instructors → classes they are assigned to teach
+     *   - Superadmin / Custodian → all active, non-archived classes
+     */
+    public function getMyClasses(Request $request)
+    {
+        $user = auth()->user();
+
+        if ($user->role === 'student') {
+            $query = ClassCode::whereHas('students', function ($q) use ($user) {
+                $q->where('users.id', $user->id);
+            });
+        } elseif ($user->role === 'instructor') {
+            $query = ClassCode::whereHas('instructors', function ($q) use ($user) {
+                $q->where('users.id', $user->id);
+            });
+        } else {
+            $query = ClassCode::where('is_active', true)->where('is_archived', false);
+        }
+
+        $populate = $request->boolean('populate', false);
+
+        $classes = $query
+            ->orderBy('academic_year', 'desc')
+            ->orderBy('semester')
+            ->orderBy('course_code')
+            ->get();
+
+        return response()->json([
+            'classCodes' => $classes->map(fn(ClassCode $c) => $this->transformClassCode($c, $populate))
         ]);
     }
 
