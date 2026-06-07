@@ -240,18 +240,21 @@ class CartController extends Controller
         return new StreamedResponse(function () {
             $timestamp = Carbon::now()->toIso8601String();
 
+            echo "retry: 15000\n";
             echo "event: connected\n";
             echo 'data: ' . json_encode(['message' => 'Cart stream connected', 'timestamp' => $timestamp]) . "\n\n";
             ob_flush();
             flush();
 
-            $start = time();
-            while (time() - $start < 30) {
-                echo "event: heartbeat\n";
-                echo 'data: ' . json_encode(['timestamp' => Carbon::now()->toIso8601String()]) . "\n\n";
-                ob_flush();
-                flush();
-                sleep(10);
+            if (php_sapi_name() !== 'cli-server') {
+                $start = time();
+                while (time() - $start < 30) {
+                    echo "event: heartbeat\n";
+                    echo 'data: ' . json_encode(['timestamp' => Carbon::now()->toIso8601String()]) . "\n\n";
+                    ob_flush();
+                    flush();
+                    sleep(10);
+                }
             }
         }, 200, [
             'Content-Type'      => 'text/event-stream',

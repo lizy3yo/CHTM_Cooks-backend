@@ -312,19 +312,22 @@ class DonationAndObligationController extends Controller
     public function streamDonations()
     {
         return new StreamedResponse(function () {
+            echo "retry: 15000\n";
             echo "event: connected\n";
             echo "data: {}\n\n";
             ob_flush();
             flush();
 
-            // Heartbeat
-            $start = time();
-            while (time() - $start < 30) {
-                echo "event: heartbeat\n";
-                echo "data: {}\n\n";
-                ob_flush();
-                flush();
-                sleep(10);
+            if (php_sapi_name() !== 'cli-server') {
+                // Heartbeat
+                $start = time();
+                while (time() - $start < 30) {
+                    echo "event: heartbeat\n";
+                    echo "data: {}\n\n";
+                    ob_flush();
+                    flush();
+                    sleep(10);
+                }
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
@@ -512,18 +515,21 @@ class DonationAndObligationController extends Controller
     public function streamObligations()
     {
         return new StreamedResponse(function () {
+            echo "retry: 15000\n";
             echo "event: connected\n";
             echo "data: {}\n\n";
             ob_flush();
             flush();
 
-            // Heartbeat
-            $start = time();
-            while (time() - $start < 30) {
-                echo ": keepalive\n\n";
-                ob_flush();
-                flush();
-                sleep(15);
+            if (php_sapi_name() !== 'cli-server') {
+                // Heartbeat
+                $start = time();
+                while (time() - $start < 30) {
+                    echo ": keepalive\n\n";
+                    ob_flush();
+                    flush();
+                    sleep(15);
+                }
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',

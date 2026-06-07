@@ -736,18 +736,21 @@ class AnalyticsReportController extends Controller
     public function stream()
     {
         return new StreamedResponse(function () {
+            echo "retry: 15000\n";
             echo "event: connected\n";
             echo "data: {}\n\n";
             ob_flush();
             flush();
 
-            // Simple keep alive loop
-            $start = time();
-            while (time() - $start < 30) {
-                echo ": keepalive\n\n";
-                ob_flush();
-                flush();
-                sleep(10);
+            if (php_sapi_name() !== 'cli-server') {
+                // Simple keep alive loop
+                $start = time();
+                while (time() - $start < 30) {
+                    echo ": keepalive\n\n";
+                    ob_flush();
+                    flush();
+                    sleep(10);
+                }
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',

@@ -1042,18 +1042,21 @@ class InventoryController extends Controller
     public function stream()
     {
         return new StreamedResponse(function () {
+            echo "retry: 15000\n";
             echo "event: connected\n";
             echo "data: {}\n\n";
             ob_flush();
             flush();
 
-            // Simple keep alive comments
-            $start = time();
-            while (time() - $start < 30) {
-                echo ": keepalive\n\n";
-                ob_flush();
-                flush();
-                sleep(5);
+            if (php_sapi_name() !== 'cli-server') {
+                // Simple keep alive comments
+                $start = time();
+                while (time() - $start < 30) {
+                    echo ": keepalive\n\n";
+                    ob_flush();
+                    flush();
+                    sleep(5);
+                }
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
