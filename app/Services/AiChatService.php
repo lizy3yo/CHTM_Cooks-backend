@@ -154,7 +154,7 @@ TEXT;
                 $metrics = [
                     'pendingApproval'    => BorrowRequest::where('student_id', $userId)->where('status', 'pending_instructor')->count(),
                     'readyForPickup'     => BorrowRequest::where('student_id', $userId)->where('status', 'ready_for_pickup')->count(),
-                    'activeLoans'        => BorrowRequest::where('student_id', $userId)->whereIn('status', ['borrowed', 'pending_return'])->count(),
+                    'currentlyBorrowed'  => BorrowRequest::where('student_id', $userId)->whereIn('status', ['borrowed', 'pending_return'])->count(),
                     'pendingObligations' => ReplacementObligation::where('student_id', $userId)->where('status', 'pending')->count(),
                 ];
             } elseif ($role === 'instructor') {
@@ -209,7 +209,7 @@ TEXT;
                     ->where('status', 'ready_for_pickup')
                     ->count();
 
-                $activeLoans = BorrowRequest::where('student_id', $userId)
+                $currentlyBorrowed = BorrowRequest::where('student_id', $userId)
                     ->whereIn('status', ['borrowed', 'pending_return'])
                     ->count();
 
@@ -230,7 +230,7 @@ TEXT;
                 $metrics = [
                     'pendingApproval' => $pendingApproval,
                     'readyForPickup' => $readyForPickup,
-                    'activeLoans' => $activeLoans,
+                    'currentlyBorrowed' => $currentlyBorrowed,
                     'pendingObligations' => $pendingObligations,
                     'trustScore' => $trustScore,
                     'trustTier' => $trustTier
