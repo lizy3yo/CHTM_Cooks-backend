@@ -238,27 +238,30 @@ class CartController extends Controller
     public function stream(): StreamedResponse
     {
         return new StreamedResponse(function () {
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+
             $timestamp = Carbon::now()->toIso8601String();
 
             echo "retry: 15000\n";
             echo "event: connected\n";
             echo 'data: ' . json_encode(['message' => 'Cart stream connected', 'timestamp' => $timestamp]) . "\n\n";
-            ob_flush();
             flush();
 
-            if (php_sapi_name() !== 'cli-server') {
+            $hasMultipleWorkers = function_exists('pcntl_fork') && getenv('PHP_CLI_SERVER_WORKERS') && intval(getenv('PHP_CLI_SERVER_WORKERS')) > 1;
+            if (php_sapi_name() !== 'cli-server' || $hasMultipleWorkers) {
                 $start = time();
                 while (time() - $start < 30) {
                     echo "event: heartbeat\n";
                     echo 'data: ' . json_encode(['timestamp' => Carbon::now()->toIso8601String()]) . "\n\n";
-                    ob_flush();
                     flush();
                     sleep(10);
                 }
             }
         }, 200, [
             'Content-Type'      => 'text/event-stream',
-            'Cache-Control'     => 'no-cache',
+            'Cache-Control'     => 'no-cache, no-store',
             'Connection'        => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);

@@ -398,7 +398,7 @@ class InventoryController extends Controller
             'category' => 'required|string',
             'categoryId' => 'nullable|integer',
             'specification' => 'nullable|string',
-            'toolsOrEquipment' => 'required|string',
+            'toolsOrEquipment' => 'nullable|string',
             'picture' => 'nullable|string',
             'quantity' => 'required|integer|min:0',
             'donations' => 'nullable|integer|min:0',
@@ -431,7 +431,7 @@ class InventoryController extends Controller
             'category' => $request->category,
             'category_id' => $request->categoryId,
             'specification' => $request->specification,
-            'tools_or_equipment' => $request->toolsOrEquipment,
+            'tools_or_equipment' => $request->toolsOrEquipment ?? '',
             'picture' => $request->picture,
             'quantity' => $quantity,
             'donations' => $donations,
@@ -465,7 +465,7 @@ class InventoryController extends Controller
             'category' => 'sometimes|required|string',
             'categoryId' => 'nullable|integer',
             'specification' => 'nullable|string',
-            'toolsOrEquipment' => 'sometimes|required|string',
+            'toolsOrEquipment' => 'sometimes|nullable|string',
             'picture' => 'nullable|string',
             'quantity' => 'sometimes|required|integer|min:0',
             'donations' => 'nullable|integer|min:0',
@@ -495,7 +495,7 @@ class InventoryController extends Controller
         if ($request->has('category')) $updateData['category'] = $request->category;
         if ($request->has('categoryId')) $updateData['category_id'] = $request->categoryId;
         if ($request->has('specification')) $updateData['specification'] = $request->specification;
-        if ($request->has('toolsOrEquipment')) $updateData['tools_or_equipment'] = $request->toolsOrEquipment;
+        if ($request->has('toolsOrEquipment')) $updateData['tools_or_equipment'] = $request->toolsOrEquipment ?? '';
         if ($request->has('picture')) $updateData['picture'] = $request->picture;
         if ($request->has('quantity')) $updateData['quantity'] = $request->quantity;
         if ($request->has('donations')) $updateData['donations'] = $request->donations;
@@ -606,7 +606,7 @@ class InventoryController extends Controller
             'items.*.category' => 'required|string',
             'items.*.categoryId' => 'nullable|integer',
             'items.*.specification' => 'nullable|string',
-            'items.*.toolsOrEquipment' => 'required|string',
+            'items.*.toolsOrEquipment' => 'nullable|string',
             'items.*.picture' => 'nullable|string',
             'items.*.quantity' => 'required|integer|min:0',
         ]);
@@ -630,7 +630,7 @@ class InventoryController extends Controller
                     'category' => $itemData['category'],
                     'category_id' => $itemData['categoryId'] ?? null,
                     'specification' => $itemData['specification'] ?? '',
-                    'tools_or_equipment' => $itemData['toolsOrEquipment'],
+                    'tools_or_equipment' => $itemData['toolsOrEquipment'] ?? '',
                     'picture' => $itemData['picture'] ?? null,
                     'quantity' => $qty,
                     'donations' => 0,
@@ -1042,25 +1042,28 @@ class InventoryController extends Controller
     public function stream()
     {
         return new StreamedResponse(function () {
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+
             echo "retry: 15000\n";
             echo "event: connected\n";
             echo "data: {}\n\n";
-            ob_flush();
             flush();
 
-            if (php_sapi_name() !== 'cli-server') {
+            $hasMultipleWorkers = function_exists('pcntl_fork') && getenv('PHP_CLI_SERVER_WORKERS') && intval(getenv('PHP_CLI_SERVER_WORKERS')) > 1;
+            if (php_sapi_name() !== 'cli-server' || $hasMultipleWorkers) {
                 // Simple keep alive comments
                 $start = time();
                 while (time() - $start < 30) {
                     echo ": keepalive\n\n";
-                    ob_flush();
                     flush();
                     sleep(5);
                 }
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
+            'Cache-Control' => 'no-cache, no-store',
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);

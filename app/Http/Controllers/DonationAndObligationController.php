@@ -102,7 +102,7 @@ class DonationAndObligationController extends Controller
             'category' => 'required_if:inventoryAction,new_item|string',
             'categoryId' => 'nullable|integer',
             'specification' => 'nullable|string',
-            'toolsOrEquipment' => 'required_if:inventoryAction,new_item|string',
+            'toolsOrEquipment' => 'nullable|string',
             
             // Required if add_to_existing
             'inventoryItemId' => 'required_if:inventoryAction,add_to_existing|integer|exists:inventory_items,id'
@@ -130,7 +130,7 @@ class DonationAndObligationController extends Controller
                 'category' => $request->category,
                 'category_id' => $request->categoryId,
                 'specification' => $request->specification,
-                'tools_or_equipment' => $request->toolsOrEquipment,
+                'tools_or_equipment' => $request->toolsOrEquipment ?? '',
                 'picture' => null,
                 'quantity' => 0,
                 'donations' => $request->quantity,
@@ -312,26 +312,29 @@ class DonationAndObligationController extends Controller
     public function streamDonations()
     {
         return new StreamedResponse(function () {
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+
             echo "retry: 15000\n";
             echo "event: connected\n";
             echo "data: {}\n\n";
-            ob_flush();
             flush();
 
-            if (php_sapi_name() !== 'cli-server') {
+            $hasMultipleWorkers = function_exists('pcntl_fork') && getenv('PHP_CLI_SERVER_WORKERS') && intval(getenv('PHP_CLI_SERVER_WORKERS')) > 1;
+            if (php_sapi_name() !== 'cli-server' || $hasMultipleWorkers) {
                 // Heartbeat
                 $start = time();
                 while (time() - $start < 30) {
                     echo "event: heartbeat\n";
                     echo "data: {}\n\n";
-                    ob_flush();
                     flush();
                     sleep(10);
                 }
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
+            'Cache-Control' => 'no-cache, no-store',
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);
@@ -515,25 +518,28 @@ class DonationAndObligationController extends Controller
     public function streamObligations()
     {
         return new StreamedResponse(function () {
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+
             echo "retry: 15000\n";
             echo "event: connected\n";
             echo "data: {}\n\n";
-            ob_flush();
             flush();
 
-            if (php_sapi_name() !== 'cli-server') {
+            $hasMultipleWorkers = function_exists('pcntl_fork') && getenv('PHP_CLI_SERVER_WORKERS') && intval(getenv('PHP_CLI_SERVER_WORKERS')) > 1;
+            if (php_sapi_name() !== 'cli-server' || $hasMultipleWorkers) {
                 // Heartbeat
                 $start = time();
                 while (time() - $start < 30) {
                     echo ": keepalive\n\n";
-                    ob_flush();
                     flush();
                     sleep(15);
                 }
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
+            'Cache-Control' => 'no-cache, no-store',
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);
