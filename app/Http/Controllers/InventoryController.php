@@ -140,10 +140,6 @@ class InventoryController extends Controller
             $query->where('category', 'like', '%' . $category . '%');
         }
 
-        if ($availability && $availability !== 'all') {
-            $query->where('status', $availability);
-        }
-
         if ($required === 'required') {
             $query->where('is_required', true);
         }
@@ -151,7 +147,6 @@ class InventoryController extends Controller
         // Sorting
         match ($sortBy) {
             'category'     => $query->orderBy('category')->orderBy('name'),
-            'availability' => $query->orderBy('status')->orderBy('name'),
             'recent'       => $query->orderByDesc('created_at'),
             'updated'      => $query->orderByDesc('updated_at'),
             default        => $query->orderBy('name'),
@@ -349,9 +344,7 @@ class InventoryController extends Controller
             $query->where('category', $categoryVal);
         }
 
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
-        }
+
 
         if ($request->filled('search')) {
             $search = '%' . $request->search . '%';
@@ -414,17 +407,10 @@ class InventoryController extends Controller
 
         $user = auth()->user();
 
-        // Calculate status
+        // Calculate stock
         $quantity = $request->integer('quantity', 0);
         $donations = $request->integer('donations', 0);
         $totalStock = $quantity + $donations;
-        
-        $status = 'In Stock';
-        if ($totalStock === 0) {
-            $status = 'Out of Stock';
-        } elseif ($totalStock <= 5) {
-            $status = 'Low Stock';
-        }
 
         $item = InventoryItem::create([
             'name' => $request->name,
@@ -436,7 +422,6 @@ class InventoryController extends Controller
             'quantity' => $quantity,
             'donations' => $donations,
             'eom_count' => $request->integer('eomCount', $totalStock),
-            'status' => $status,
             'is_required' => $request->boolean('isrequired', false),
             'max_quantity_per_request' => $request->maxQuantityPerRequest,
             'unit_price' => $request->unitPrice,
@@ -505,22 +490,7 @@ class InventoryController extends Controller
         if ($request->has('unitPrice')) $updateData['unit_price'] = $request->unitPrice;
         if ($request->has('archived')) $updateData['archived'] = $request->archived;
 
-        // Auto status calculation if stock changes
-        $qty = $request->has('quantity') ? $request->integer('quantity') : $item->quantity;
-        $donations = $request->has('donations') ? $request->integer('donations') : $item->donations;
-        $totalStock = $qty + $donations;
-        
-        if ($request->boolean('archived', $item->archived)) {
-            $updateData['status'] = 'Archived';
-        } else {
-            if ($totalStock === 0) {
-                $updateData['status'] = 'Out of Stock';
-            } elseif ($totalStock <= 5) {
-                $updateData['status'] = 'Low Stock';
-            } else {
-                $updateData['status'] = 'In Stock';
-            }
-        }
+
 
         $item->update($updateData);
         $item->updated_by = $user->id;
@@ -623,7 +593,6 @@ class InventoryController extends Controller
         foreach ($request->items as $index => $itemData) {
             try {
                 $qty = (int) ($itemData['quantity'] ?? 0);
-                $status = ($qty === 0) ? 'Out of Stock' : (($qty <= 5) ? 'Low Stock' : 'In Stock');
 
                 $item = InventoryItem::create([
                     'name' => $itemData['name'],
@@ -635,7 +604,6 @@ class InventoryController extends Controller
                     'quantity' => $qty,
                     'donations' => 0,
                     'eom_count' => $qty,
-                    'status' => $status,
                     'created_by' => $user->id,
                 ]);
 
@@ -764,12 +732,7 @@ class InventoryController extends Controller
             return response()->json(['error' => 'Item not found'], 404);
         }
 
-        $oldStatus = $item->status;
-        $qty = $item->quantity + $item->donations;
-        $newStatus = ($qty === 0) ? 'Out of Stock' : (($qty <= 5) ? 'Low Stock' : 'In Stock');
-
         $item->archived = false;
-        $item->status = $newStatus;
         $item->save();
 
         $this->logActivity('item_restored', 'item', $item->id, $item->name, [
@@ -777,11 +740,6 @@ class InventoryController extends Controller
                 'field' => 'archived',
                 'oldValue' => true,
                 'newValue' => false
-            ],
-            [
-                'field' => 'status',
-                'oldValue' => $oldStatus,
-                'newValue' => $newStatus
             ]
         ]);
 
@@ -1076,7 +1034,7 @@ class InventoryController extends Controller
     public function export(Request $request)
     {
         $sheets = explode(',', $request->input('sheets', 'inventory'));
-        $columns = explode(',', $request->input('columns', 'id,name,quantity,category,status'));
+        $columns = explode(',', $request->input('columns', 'id,name,quantity,category'));
         
         $categoriesFilter = $request->filled('categories') ? explode(',', $request->categories) : [];
         $specificationsFilter = $request->filled('specifications') ? explode(',', $request->specifications) : [];
@@ -1117,7 +1075,6 @@ class InventoryController extends Controller
                         case 'quantity': $row[] = $item->quantity; break;
                         case 'donations': $row[] = $item->donations; break;
                         case 'eomCount': $row[] = $item->eom_count; break;
-                        case 'status': $row[] = $item->status; break;
                         case 'unitPrice': $row[] = $item->unit_price; break;
                         case 'isrequired': $row[] = $item->is_required ? 'Yes' : 'No'; break;
                         case 'maxQuantityPerRequest': $row[] = $item->max_quantity_per_request; break;

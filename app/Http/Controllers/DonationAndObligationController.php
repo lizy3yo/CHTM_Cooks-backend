@@ -135,7 +135,6 @@ class DonationAndObligationController extends Controller
                 'quantity' => 0,
                 'donations' => $request->quantity,
                 'eom_count' => $request->quantity,
-                'status' => 'In Stock',
                 'created_by' => $user->id,
             ]);
 
@@ -150,14 +149,6 @@ class DonationAndObligationController extends Controller
             $invItem = InventoryItem::find($request->inventoryItemId);
             $invItem->increment('donations', $request->quantity);
             $invItem->eom_count += $request->quantity;
-            
-            // Update stock status
-            $totalStock = $invItem->quantity + $invItem->donations;
-            if ($totalStock > 5) {
-                $invItem->status = 'In Stock';
-            } elseif ($totalStock > 0) {
-                $invItem->status = 'Low Stock';
-            }
             $invItem->save();
 
             $inventoryItemId = $invItem->id;
@@ -212,13 +203,6 @@ class DonationAndObligationController extends Controller
             if ($invItem) {
                 $invItem->increment('donations', $qtyToAdd);
                 $invItem->eom_count += $qtyToAdd;
-                
-                $totalStock = $invItem->quantity + $invItem->donations;
-                if ($totalStock > 5) {
-                    $invItem->status = 'In Stock';
-                } elseif ($totalStock > 0) {
-                    $invItem->status = 'Low Stock';
-                }
                 $invItem->save();
             }
         }
@@ -264,15 +248,6 @@ class DonationAndObligationController extends Controller
                 if ($invItem) {
                     $invItem->increment('donations', $diff);
                     $invItem->eom_count += $diff;
-                    
-                    $totalStock = $invItem->quantity + $invItem->donations;
-                    if ($totalStock > 5) {
-                        $invItem->status = 'In Stock';
-                    } elseif ($totalStock > 0) {
-                        $invItem->status = 'Low Stock';
-                    } else {
-                        $invItem->status = 'Out of Stock';
-                    }
                     $invItem->save();
                 }
             }
@@ -293,14 +268,6 @@ class DonationAndObligationController extends Controller
             $invItem = InventoryItem::find($donation->inventory_item_id);
             if ($invItem) {
                 $invItem->decrement('donations', min($donation->quantity, $invItem->donations));
-                
-                $totalStock = $invItem->quantity + $invItem->donations;
-                if ($totalStock === 0) {
-                    $invItem->status = 'Out of Stock';
-                } elseif ($totalStock <= 5) {
-                    $invItem->status = 'Low Stock';
-                }
-                $invItem->save();
             }
         }
 
@@ -466,8 +433,6 @@ class DonationAndObligationController extends Controller
             $invItem = InventoryItem::find($ob->item_id);
             if ($invItem) {
                 $invItem->increment('quantity', $amountPaidInput);
-                $invItem->status = 'In Stock';
-                $invItem->save();
             }
         }
 

@@ -393,13 +393,6 @@ class BorrowRequestController extends Controller
                     $invItem->decrement('donations', $remainder);
                 }
 
-                // Update stock status
-                $totalStock = $invItem->quantity + $invItem->donations;
-                if ($totalStock === 0) {
-                    $invItem->status = 'Out of Stock';
-                } elseif ($totalStock <= 5) {
-                    $invItem->status = 'Low Stock';
-                }
                 $invItem->save();
             }
         }
@@ -543,8 +536,6 @@ class BorrowRequestController extends Controller
                     // Return items back to inventory stock
                     if ($invItem) {
                         $invItem->increment('quantity', $borrowItem->quantity);
-                        $invItem->status = 'In Stock';
-                        $invItem->save();
                     }
                 } else {
                     $hasIssues = true;

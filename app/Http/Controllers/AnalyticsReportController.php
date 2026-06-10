@@ -266,8 +266,8 @@ class AnalyticsReportController extends Controller
         $totalEomQty = $currentItems->sum('eom_count');
         $totalDonationsQty = $currentItems->sum('donations');
         $requiredCount = $currentItems->where('is_required', true)->count();
-        $lowStockCount = $currentItems->filter(fn($i) => ($i->quantity + $i->donations) <= 5)->count();
-        $outOfStockCount = $currentItems->filter(fn($i) => ($i->quantity + $i->donations) === 0)->count();
+        $lowStockCount = 0;
+        $outOfStockCount = 0;
 
         // Stock adjustments (donations with donor_name = 'Custodian Stock Adjustment')
         $adjustments = Donation::where('donor_name', 'Custodian Stock Adjustment')
@@ -298,8 +298,7 @@ class AnalyticsReportController extends Controller
                 'quantity' => $i->quantity,
                 'eomCount' => $i->eom_count,
                 'variance' => $i->quantity - $i->eom_count,
-                'donations' => $i->donations,
-                'status' => $i->status
+                'donations' => $i->donations
             ];
         })->values()->toArray();
 
@@ -412,17 +411,8 @@ class AnalyticsReportController extends Controller
         usort($varianceDrivers, fn($a, $b) => $b['totalBorrowedQuantity'] - $a['totalBorrowedQuantity']);
         $varianceDrivers = array_slice($varianceDrivers, 0, 20);
 
-        // Stock alerts
-        $stockAlerts = $currentItems->filter(fn($i) => ($i->quantity + $i->donations) <= 5)->sortBy('quantity')->slice(0, 20)->map(function ($i) {
-            return [
-                '_id' => (string) $i->id,
-                'name' => $i->name,
-                'category' => $i->category,
-                'picture' => $i->picture,
-                'quantity' => $i->quantity + $i->donations,
-                'status' => ($i->quantity + $i->donations) === 0 ? 'Out of Stock' : 'Low Stock'
-            ];
-        })->values()->toArray();
+        // Stock alerts (removed)
+        $stockAlerts = [];
 
         // Stock adjustments activity logs
         $stockAdjustments = $adjustments->sortByDesc('created_at')->map(function ($a) {
@@ -1102,7 +1092,6 @@ XML;
         $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Donations</Data></Cell>\n";
         $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">EOM Target</Data></Cell>\n";
         $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Variance</Data></Cell>\n";
-        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Status</Data></Cell>\n";
         $out .= "      </Row>\n";
 
         $idx = 0;
@@ -1116,7 +1105,6 @@ XML;
             $out .= "        <Cell ss:StyleID=\"{$numStyle}\"><Data ss:Type=\"Number\">{$i['donations']}</Data></Cell>\n";
             $out .= "        <Cell ss:StyleID=\"{$numStyle}\"><Data ss:Type=\"Number\">{$i['eomCount']}</Data></Cell>\n";
             $out .= "        <Cell ss:StyleID=\"{$numStyle}\"><Data ss:Type=\"Number\">{$i['variance']}</Data></Cell>\n";
-            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">{$i['status']}</Data></Cell>\n";
             $out .= "      </Row>\n";
             $idx++;
         }
