@@ -200,7 +200,7 @@ class AuthController extends Controller
             'year_level' => $request->yearLevel,
             'block' => $request->block,
             'agreed_to_terms' => $request->agreedToTerms ?? false,
-            'trust_score' => $request->role === 'student' ? 100 : null,
+            'trust_score' => 100,
         ]);
 
         // Send verification email to student

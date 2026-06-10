@@ -113,7 +113,7 @@ class UserController extends Controller
             'email_verified' => true, // Admin-created accounts are pre-verified
             'year_level' => $request->yearLevel,
             'block' => $request->block,
-            'trust_score' => $request->role === 'student' ? 100 : null
+            'trust_score' => 100
         ]);
 
         return response()->json([
