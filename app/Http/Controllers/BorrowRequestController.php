@@ -197,6 +197,15 @@ class BorrowRequestController extends Controller
 
         $user = auth()->user();
 
+        // Check if student has active pending requests
+        $hasPending = BorrowRequest::where('student_id', $user->id)
+            ->whereIn('status', ['pending_instructor', 'approved_instructor', 'ready_for_pickup', 'pending_return', 'pending_appeal'])
+            ->exists();
+
+        if ($hasPending) {
+            return response()->json(['error' => 'You already have an active pending request awaiting action.'], 403);
+        }
+
         // Check if student has active replacement obligations
         $hasUnpaidObligations = ReplacementObligation::where('student_id', $user->id)
             ->where('status', 'pending')

@@ -45,11 +45,29 @@ class AnalyticsReportController extends Controller
     {
         $now = Carbon::now();
 
-        // 1. Borrow Requests
         $requests = BorrowRequest::with(['items', 'student', 'instructor', 'custodian'])
             ->whereBetween('created_at', [$start, $end])
             ->get();
 
+        $borrowRequestsReport = $this->getBorrowRequestsReport($start, $end, $now, $requests);
+
+        return [
+            'meta' => [
+                'period' => $period,
+                'from' => $start->toIso8601String(),
+                'to' => $end->toIso8601String(),
+                'generatedAt' => $now->toIso8601String()
+            ],
+            'borrowRequests' => $borrowRequestsReport['data'],
+            'lossAndDamage' => $this->getLossAndDamageReport($start, $end),
+            'inventory' => $this->getInventoryReport($start, $end, $requests, $borrowRequestsReport['itemsBorrowed']),
+            'replacement' => $this->getReplacementReport(),
+            'studentRisk' => $this->getStudentRiskReport($start, $end, $now)
+        ];
+    }
+
+    private function getBorrowRequestsReport(Carbon $start, Carbon $end, Carbon $now, \Illuminate\Database\Eloquent\Collection $requests): array
+    {
         // Overdue count & list
         $overdueCount = BorrowRequest::where('status', 'borrowed')
             ->where('return_date', '<', $now)
@@ -214,7 +232,25 @@ class AnalyticsReportController extends Controller
         $borrowers = array_values($borrowersMap);
         usort($borrowers, fn($a, $b) => $b['requestCount'] - $a['requestCount']);
 
-        // 2. Loss & Damage
+        return [
+            'data' => [
+                'requestsOverTime' => $requestsOverTime,
+                'statusBreakdown' => $statusBreakdown,
+                'turnaround' => $turnaround,
+                'overdueCount' => $overdueCount,
+                'overdueRequests' => $overdueRequests,
+                'peakHeatmap' => $peakHeatmap,
+                'borrowingAverages' => $borrowingAverages,
+                'itemsBorrowed' => $itemsBorrowed,
+                'itemEntries' => $itemEntries,
+                'borrowers' => $borrowers
+            ],
+            'itemsBorrowed' => $itemsBorrowed
+        ];
+    }
+
+    private function getLossAndDamageReport(Carbon $start, Carbon $end): array
+    {
         $obligations = ReplacementObligation::with(['student', 'borrowRequest'])
             ->whereBetween('incident_date', [$start, $end])
             ->get();
@@ -260,8 +296,34 @@ class AnalyticsReportController extends Controller
             ];
         })->values()->toArray();
 
-        // 3. Inventory
+        return [
+            'summary' => $lossAndDamageSummary,
+            'tracking' => $lossAndDamageTracking
+        ];
+    }
+
+    private function getInventoryReport(Carbon $start, Carbon $end, \Illuminate\Database\Eloquent\Collection $requests, array $itemsBorrowed): array
+    {
         $currentItems = InventoryItem::where('archived', false)->get();
+        $adjustments = Donation::where('donor_name', 'Custodian Stock Adjustment')
+            ->whereBetween('created_at', [$start, $end])
+            ->get();
+
+        return [
+            'summary' => $this->buildInventorySummary($start, $end, $currentItems, $adjustments),
+            'requiredItems' => $this->buildRequiredItems($currentItems),
+            'mostBorrowedItems' => array_slice($itemsBorrowed, 0, 10),
+            'itemsCurrentlyOut' => $this->buildItemsCurrentlyOut(),
+            'damageRateItems' => $this->buildDamageRateItems($start, $end),
+            'eomVariance' => $this->buildEomVariance($currentItems),
+            'varianceDrivers' => $this->buildVarianceDrivers($requests),
+            'stockAlerts' => [],
+            'stockAdjustments' => $this->buildStockAdjustments($adjustments)
+        ];
+    }
+
+    private function buildInventorySummary(Carbon $start, Carbon $end, \Illuminate\Database\Eloquent\Collection $currentItems, \Illuminate\Database\Eloquent\Collection $adjustments): array
+    {
         $totalStockQty = $currentItems->sum('quantity');
         $totalEomQty = $currentItems->sum('eom_count');
         $totalDonationsQty = $currentItems->sum('donations');
@@ -269,15 +331,10 @@ class AnalyticsReportController extends Controller
         $lowStockCount = 0;
         $outOfStockCount = 0;
 
-        // Stock adjustments (donations with donor_name = 'Custodian Stock Adjustment')
-        $adjustments = Donation::where('donor_name', 'Custodian Stock Adjustment')
-            ->whereBetween('created_at', [$start, $end])
-            ->get();
-        
         $totalAdjustedAdded = $adjustments->filter(fn($a) => $a->quantity > 0)->sum('quantity');
         $totalAdjustedDeducted = abs($adjustments->filter(fn($a) => $a->quantity < 0)->sum('quantity'));
 
-        $inventorySummary = [
+        return [
             'currentCount' => $totalStockQty,
             'eomCount' => $totalEomQty,
             'variance' => $totalStockQty - $totalEomQty,
@@ -289,8 +346,11 @@ class AnalyticsReportController extends Controller
             'stockAdjustmentsDeducted' => $totalAdjustedDeducted,
             'stockAdjustmentsCount' => $adjustments->count()
         ];
+    }
 
-        $requiredItems = $currentItems->where('is_required', true)->sortByDesc('quantity')->slice(0, 20)->map(function ($i) {
+    private function buildRequiredItems(\Illuminate\Database\Eloquent\Collection $currentItems): array
+    {
+        return $currentItems->where('is_required', true)->sortByDesc('quantity')->slice(0, 20)->map(function ($i) {
             return [
                 'id' => (string) $i->id,
                 'name' => $i->name,
@@ -301,10 +361,10 @@ class AnalyticsReportController extends Controller
                 'donations' => $i->donations
             ];
         })->values()->toArray();
+    }
 
-        $mostBorrowedItems = array_slice($itemsBorrowed, 0, 10);
-
-        // Items currently out
+    private function buildItemsCurrentlyOut(): array
+    {
         $outItemsMap = [];
         $activeBorrowings = BorrowRequest::with('items')->where('status', 'borrowed')->get();
         foreach ($activeBorrowings as $b) {
@@ -322,7 +382,6 @@ class AnalyticsReportController extends Controller
                 $outItemsMap[$itemId]['quantityOut'] += $item->quantity;
             }
         }
-        // Fill total stock
         foreach ($outItemsMap as $itemId => $outData) {
             $invItem = InventoryItem::find($itemId);
             if ($invItem) {
@@ -331,9 +390,11 @@ class AnalyticsReportController extends Controller
         }
         $itemsCurrentlyOut = array_values($outItemsMap);
         usort($itemsCurrentlyOut, fn($a, $b) => $b['quantityOut'] - $a['quantityOut']);
-        $itemsCurrentlyOut = array_slice($itemsCurrentlyOut, 0, 20);
+        return array_slice($itemsCurrentlyOut, 0, 20);
+    }
 
-        // Damage rate items
+    private function buildDamageRateItems(Carbon $start, Carbon $end): array
+    {
         $inspectedItemsMap = [];
         $completedRequests = BorrowRequest::with('items')
             ->whereBetween('created_at', [$start, $end])
@@ -369,10 +430,12 @@ class AnalyticsReportController extends Controller
             }
         }
         usort($damageRateItems, fn($a, $b) => $b['incidentRate'] <=> $a['incidentRate']);
-        $damageRateItems = array_slice($damageRateItems, 0, 10);
+        return array_slice($damageRateItems, 0, 10);
+    }
 
-        // EOM Variance list
-        $eomVariance = $currentItems->filter(fn($i) => ($i->quantity - $i->eom_count) !== 0)->map(function ($i) {
+    private function buildEomVariance(\Illuminate\Database\Eloquent\Collection $currentItems): array
+    {
+        return $currentItems->filter(fn($i) => ($i->quantity - $i->eom_count) !== 0)->map(function ($i) {
             return [
                 '_id' => (string) $i->id,
                 'name' => $i->name,
@@ -382,8 +445,10 @@ class AnalyticsReportController extends Controller
                 'variance' => $i->quantity - $i->eom_count
             ];
         })->sortByDesc(fn($i) => abs($i['variance']))->slice(0, 200)->values()->toArray();
+    }
 
-        // Variance Drivers
+    private function buildVarianceDrivers(\Illuminate\Database\Eloquent\Collection $requests): array
+    {
         $varianceDriversMap = [];
         foreach ($requests as $r) {
             foreach ($r->items as $item) {
@@ -409,13 +474,12 @@ class AnalyticsReportController extends Controller
         }
         $varianceDrivers = array_values($varianceDriversMap);
         usort($varianceDrivers, fn($a, $b) => $b['totalBorrowedQuantity'] - $a['totalBorrowedQuantity']);
-        $varianceDrivers = array_slice($varianceDrivers, 0, 20);
+        return array_slice($varianceDrivers, 0, 20);
+    }
 
-        // Stock alerts (removed)
-        $stockAlerts = [];
-
-        // Stock adjustments activity logs
-        $stockAdjustments = $adjustments->sortByDesc('created_at')->map(function ($a) {
+    private function buildStockAdjustments(\Illuminate\Database\Eloquent\Collection $adjustments): array
+    {
+        return $adjustments->sortByDesc('created_at')->map(function ($a) {
             return [
                 'id' => (string) $a->id,
                 'itemName' => $a->item_name,
@@ -426,8 +490,10 @@ class AnalyticsReportController extends Controller
                 'date' => $a->date ? $a->date->toIso8601String() : null
             ];
         })->values()->toArray();
+    }
 
-        // 4. Replacement
+    private function getReplacementReport(): array
+    {
         $allObligations = ReplacementObligation::get();
         $totalItemsPending = $allObligations->where('status', 'pending')->sum(fn($o) => $o->amount - $o->amount_paid);
         $totalItemsReplaced = $allObligations->where('status', 'replaced')->sum('amount_paid');
@@ -514,9 +580,29 @@ class AnalyticsReportController extends Controller
             ];
         }
 
-        // 5. Student Risk
-        // Repeat Offenders (most pending obligations)
-        $repeatOffenders = ReplacementObligation::where('status', 'pending')
+        return [
+            'summary' => $replacementSummary,
+            'resolutionBreakdown' => $resolutionBreakdown,
+            'avgResolutionDays' => $avgResolutionDays,
+            'obligationsByCategory' => $obligationsByCategory,
+            'monthlyActivity' => $monthlyActivity,
+            'donationTotals' => $donationTotals
+        ];
+    }
+
+    private function getStudentRiskReport(Carbon $start, Carbon $end, Carbon $now): array
+    {
+        return [
+            'repeatOffenders' => $this->buildRepeatOffenders(),
+            'highIncidentStudents' => $this->buildHighIncidentStudents($start, $end),
+            'overdueStudents' => $this->buildOverdueStudents($now),
+            'trustScores' => $this->buildTrustScores($start, $end)
+        ];
+    }
+
+    private function buildRepeatOffenders(): array
+    {
+        return ReplacementObligation::where('status', 'pending')
             ->with('student')
             ->get()
             ->groupBy('student_id')
@@ -531,9 +617,11 @@ class AnalyticsReportController extends Controller
                     'totalBalance' => $group->sum(fn($o) => $o->amount - $o->amount_paid)
                 ];
             })->sortByDesc('activeObligations')->slice(0, 10)->values()->toArray();
+    }
 
-        // High Incident Students
-        $highIncidentStudents = ReplacementObligation::whereBetween('incident_date', [$start, $end])
+    private function buildHighIncidentStudents(Carbon $start, Carbon $end): array
+    {
+        return ReplacementObligation::whereBetween('incident_date', [$start, $end])
             ->with('student')
             ->get()
             ->groupBy('student_id')
@@ -549,9 +637,11 @@ class AnalyticsReportController extends Controller
                     'damagedCount' => $group->where('type', 'damaged')->count()
                 ];
             })->sortByDesc('incidents')->slice(0, 10)->values()->toArray();
+    }
 
-        // Overdue Students
-        $overdueStudents = BorrowRequest::where('status', 'borrowed')
+    private function buildOverdueStudents(Carbon $now): array
+    {
+        return BorrowRequest::where('status', 'borrowed')
             ->where('return_date', '<', $now)
             ->with('student')
             ->get()
@@ -569,8 +659,10 @@ class AnalyticsReportController extends Controller
                     'daysOverdue' => $oldestReturn ? round($now->diffInHours($oldestReturn) / 24, 1) : 0
                 ];
             })->sortByDesc('daysOverdue')->slice(0, 10)->values()->toArray();
+    }
 
-        // Trust Scores list (active students in this period, limit 50)
+    private function buildTrustScores(Carbon $start, Carbon $end): array
+    {
         $activeStudentIds = BorrowRequest::whereBetween('created_at', [$start, $end])
             ->whereNotNull('student_id')
             ->groupBy('student_id')
@@ -601,56 +693,7 @@ class AnalyticsReportController extends Controller
                 'dataQuality' => $stats['dataQuality']
             ];
         }
-
-        return [
-            'meta' => [
-                'period' => $period,
-                'from' => $start->toIso8601String(),
-                'to' => $end->toIso8601String(),
-                'generatedAt' => $now->toIso8601String()
-            ],
-            'borrowRequests' => [
-                'requestsOverTime' => $requestsOverTime,
-                'statusBreakdown' => $statusBreakdown,
-                'turnaround' => $turnaround,
-                'overdueCount' => $overdueCount,
-                'overdueRequests' => $overdueRequests,
-                'peakHeatmap' => $peakHeatmap,
-                'borrowingAverages' => $borrowingAverages,
-                'itemsBorrowed' => $itemsBorrowed,
-                'itemEntries' => $itemEntries,
-                'borrowers' => $borrowers
-            ],
-            'lossAndDamage' => [
-                'summary' => $lossAndDamageSummary,
-                'tracking' => $lossAndDamageTracking
-            ],
-            'inventory' => [
-                'summary' => $inventorySummary,
-                'requiredItems' => $requiredItems,
-                'mostBorrowedItems' => $mostBorrowedItems,
-                'itemsCurrentlyOut' => $itemsCurrentlyOut,
-                'damageRateItems' => $damageRateItems,
-                'eomVariance' => $eomVariance,
-                'varianceDrivers' => $varianceDrivers,
-                'stockAlerts' => $stockAlerts,
-                'stockAdjustments' => $stockAdjustments
-            ],
-            'replacement' => [
-                'summary' => $replacementSummary,
-                'resolutionBreakdown' => $resolutionBreakdown,
-                'avgResolutionDays' => $avgResolutionDays,
-                'obligationsByCategory' => $obligationsByCategory,
-                'monthlyActivity' => $monthlyActivity,
-                'donationTotals' => $donationTotals
-            ],
-            'studentRisk' => [
-                'repeatOffenders' => $repeatOffenders,
-                'highIncidentStudents' => $highIncidentStudents,
-                'overdueStudents' => $overdueStudents,
-                'trustScores' => $trustScores
-            ]
-        ];
+        return $trustScores;
     }
 
     /**
