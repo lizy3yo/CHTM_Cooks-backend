@@ -93,5 +93,18 @@ class DatabaseSeeder extends Seeder
                 'trust_score' => 100,
             ]
         );
+
+        // 5. Seed Auditor
+        User::firstOrCreate(
+            ['email' => 'auditor@example.com'],
+            [
+                'password' => Hash::make('password123'),
+                'role' => 'auditor',
+                'first_name' => 'System',
+                'last_name' => 'Auditor',
+                'is_active' => true,
+                'email_verified' => true,
+            ]
+        );
     }
 }
