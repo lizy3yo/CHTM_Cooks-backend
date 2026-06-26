@@ -1,0 +1,397 @@
+// ============================================================
+//  CHTM COOKS — Entity Relationship Diagram
+//  Generated from Laravel migrations
+//  Import at: https://dbdiagram.io
+// ============================================================
+
+// ─── USERS & AUTH ───────────────────────────────────────────
+
+Table users {
+  id               bigint       [pk, increment]
+  email            varchar      [unique, not null]
+  password         varchar      [not null]
+  role             varchar      [not null, note: "student | custodian | instructor | superadmin | auditor"]
+  first_name       varchar      [not null]
+  last_name        varchar      [not null]
+  profile_photo_url             varchar      [null]
+  profile_photo_public_id       varchar      [null]
+  is_active        boolean      [default: true]
+  last_login       timestamp    [null]
+  email_verified   boolean      [default: false]
+  email_verification_token      varchar      [null]
+  email_verification_expires    timestamp    [null]
+  password_reset_token          varchar      [null]
+  password_reset_expires        timestamp    [null]
+  year_level       varchar      [null]
+  block            varchar      [null]
+  agreed_to_terms  boolean      [default: false]
+  trust_score      int          [default: 100]
+  remember_token   varchar      [null]
+  created_at       timestamp
+  updated_at       timestamp
+}
+
+Table password_reset_tokens {
+  email            varchar      [pk]
+  token            varchar      [not null]
+  created_at       timestamp    [null]
+}
+
+Table sessions {
+  id               varchar      [pk]
+  user_id          bigint       [null, note: "indexed, no FK constraint"]
+  ip_address       varchar      [null]
+  user_agent       text         [null]
+  payload          longtext     [not null]
+  last_activity    int          [not null]
+}
+
+// ─── INVENTORY ──────────────────────────────────────────────
+
+Table inventory_categories {
+  id               bigint       [pk, increment]
+  name             varchar      [not null]
+  description      text         [null]
+  picture          varchar      [null]
+  item_count       int          [default: 0]
+  archived         boolean      [default: false]
+  created_by       bigint       [not null, ref: > users.id]
+  updated_by       bigint       [null, ref: > users.id]
+  created_at       timestamp
+  updated_at       timestamp
+}
+
+Table inventory_items {
+  id               bigint       [pk, increment]
+  name             varchar      [not null]
+  category         varchar      [not null]
+  category_id      bigint       [null, ref: > inventory_categories.id]
+  specification    text         [null]
+  tools_or_equipment            varchar      [not null]
+  picture          varchar      [null]
+  quantity         int          [default: 0]
+  donations        int          [default: 0]
+  eom_count        int          [default: 0]
+  description      text         [null]
+  status           varchar      [default: "In Stock", note: "In Stock | Low Stock | Out of Stock | Archived"]
+  unit_price       decimal      [null]
+  is_required      boolean      [default: false]
+  max_quantity_per_request      int          [null]
+  archived         boolean      [default: false]
+  created_by       bigint       [not null, ref: > users.id]
+  updated_by       bigint       [null, ref: > users.id]
+  deleted_at       timestamp    [null]
+  created_at       timestamp
+  updated_at       timestamp
+}
+
+// ─── CLASS CODES ────────────────────────────────────────────
+
+Table class_codes {
+  id               bigint       [pk, increment]
+  code             varchar      [unique, not null]
+  course_code      varchar      [not null]
+  course_name      varchar      [not null]
+  section          varchar      [not null]
+  academic_year    varchar      [not null]
+  semester         varchar      [not null, note: "First | Second | Summer"]
+  max_enrollment   int          [not null]
+  is_active        boolean      [default: true]
+  is_archived      boolean      [default: false]
+  created_at       timestamp
+  updated_at       timestamp
+}
+
+Table class_code_instructor {
+  class_code_id    bigint       [ref: > class_codes.id]
+  user_id          bigint       [ref: > users.id]
+
+  indexes {
+    (class_code_id, user_id) [pk]
+  }
+}
+
+Table class_code_student {
+  class_code_id    bigint       [ref: > class_codes.id]
+  user_id          bigint       [ref: > users.id]
+
+  indexes {
+    (class_code_id, user_id) [pk]
+  }
+}
+
+// ─── BORROW REQUESTS ────────────────────────────────────────
+
+Table borrow_requests {
+  id               bigint       [pk, increment]
+  student_id       bigint       [not null, ref: > users.id]
+  instructor_id    bigint       [null, ref: > users.id]
+  custodian_id     bigint       [null, ref: > users.id]
+  class_code_id    bigint       [not null, ref: > class_codes.id]
+  purpose          text         [not null]
+  usage_location   varchar      [null, note: "school | outdoor"]
+  borrow_date      timestamp    [null]
+  return_date      timestamp    [null]
+  status           varchar      [default: "pending_instructor", note: "pending_instructor | approved_instructor | ready_for_pickup | borrowed | pending_return | missing | resolved | returned | cancelled | rejected | pending_appeal"]
+  reject_reason    text         [null]
+  rejection_notes  text         [null]
+  appeal_reason    text         [null]
+  appealed_at      timestamp    [null]
+  appeal_count     int          [default: 0]
+  approved_at      timestamp    [null]
+  rejected_at      timestamp    [null]
+  released_at      timestamp    [null]
+  picked_up_at     timestamp    [null]
+  missing_at       timestamp    [null]
+  resolved_at      timestamp    [null]
+  last_reminder_at timestamp    [null]
+  reminder_count   int          [default: 0]
+  returned_at      timestamp    [null]
+  created_by       bigint       [not null, ref: > users.id]
+  updated_by       bigint       [null, ref: > users.id]
+  created_at       timestamp
+  updated_at       timestamp
+}
+
+Table borrow_request_items {
+  id                    bigint       [pk, increment]
+  borrow_request_id     bigint       [not null, ref: > borrow_requests.id]
+  item_id               bigint       [not null, ref: > inventory_items.id]
+  name                  varchar      [not null]
+  quantity              int          [not null]
+  category              varchar      [null]
+  picture               varchar      [null]
+  inspection_status     varchar      [null, note: "good | damaged | missing"]
+  inspection_date       timestamp    [null]
+  inspected_by          bigint       [null, ref: > users.id]
+  inspection_notes      text         [null]
+  replacement_quantity  int          [null]
+  due_date              timestamp    [null]
+}
+
+// ─── DONATIONS & OBLIGATIONS ────────────────────────────────
+
+Table donations {
+  id                bigint       [pk, increment]
+  receipt_number    varchar      [unique, not null]
+  donor_name        varchar      [not null]
+  item_name         varchar      [not null]
+  quantity          int          [not null]
+  unit              varchar      [null]
+  purpose           text         [not null]
+  date              timestamp    [null]
+  notes             text         [null]
+  inventory_action  varchar      [not null, note: "new_item | add_to_existing"]
+  inventory_item_id bigint       [null, ref: > inventory_items.id]
+  created_by        bigint       [not null, ref: > users.id]
+  created_at        timestamp
+  updated_at        timestamp
+}
+
+Table replacement_obligations {
+  id                  bigint       [pk, increment]
+  borrow_request_id   bigint       [not null, ref: > borrow_requests.id]
+  student_id          bigint       [not null, ref: > users.id]
+  item_id             bigint       [not null, ref: > inventory_items.id]
+  item_name           varchar      [not null]
+  item_category       varchar      [null]
+  quantity            int          [not null]
+  type                varchar      [not null, note: "missing | damaged"]
+  status              varchar      [default: "pending", note: "pending | replaced"]
+  amount              int          [not null]
+  amount_paid         int          [default: 0]
+  resolution_type     varchar      [null, note: "replacement"]
+  resolution_date     timestamp    [null]
+  resolution_notes    text         [null]
+  payment_reference   varchar      [null]
+  incident_date       timestamp    [not null]
+  incident_notes      text         [null]
+  due_date            timestamp    [null]
+  created_by          bigint       [not null, ref: > users.id]
+  updated_by          bigint       [null, ref: > users.id]
+  created_at          timestamp
+  updated_at          timestamp
+}
+
+// ─── NOTIFICATIONS & TOKENS ─────────────────────────────────
+
+Table notifications {
+  id                bigint       [pk, increment]
+  user_id           bigint       [not null, ref: > users.id]
+  audience_role     varchar      [not null, note: "student | instructor | custodian | superadmin | auditor"]
+  type              varchar      [not null]
+  title             varchar      [not null]
+  message           text         [not null]
+  link              varchar      [null]
+  borrow_request_id bigint       [null, ref: > borrow_requests.id]
+  metadata          json         [null]
+  is_read           boolean      [default: false]
+  read_at           timestamp    [null]
+  created_at        timestamp
+  updated_at        timestamp
+}
+
+Table remember_tokens {
+  id                  bigint       [pk, increment]
+  user_id             bigint       [not null, ref: > users.id]
+  token_hash          varchar      [not null]
+  selector            varchar      [not null]
+  device_fingerprint  varchar      [null]
+  device_name         varchar      [null]
+  ip_address          varchar      [null]
+  last_used_ip        varchar      [null]
+  expires_at          timestamp    [null]
+  last_used_at        timestamp    [null]
+  is_revoked          boolean      [default: false]
+  revoked_reason      text         [null]
+  revoked_at          timestamp    [null]
+  created_at          timestamp
+  updated_at          timestamp
+}
+
+Table shortcut_keys {
+  id                  bigint       [pk, increment]
+  user_id             bigint       [not null, ref: > users.id]
+  shortcut_key_hash   varchar      [not null]
+  device_fingerprint  varchar      [not null]
+  shortcut_type       varchar      [not null, note: "STAFF | SUPERADMIN"]
+  is_active           boolean      [default: true]
+  last_used           timestamp    [null]
+  usage_count         int          [default: 0]
+  expires_at          timestamp    [null]
+  created_by          bigint       [not null, ref: > users.id]
+  revoked_at          timestamp    [null]
+  revoked_by          bigint       [null, ref: > users.id]
+  revoke_reason       text         [null]
+  created_at          timestamp
+  updated_at          timestamp
+}
+
+Table security_settings {
+  id                        bigint       [pk, increment]
+  key_name                  varchar      [unique, not null]
+  blocked_ips               json         [null]
+  require_2fa               boolean      [default: false]
+  session_timeout_minutes   int          [default: 30]
+  updated_by                varchar      [null]
+  updated_at                timestamp    [null, note: "no created_at — no timestamps() call in migration"]
+}
+
+// ─── SUPPORT TICKETS ────────────────────────────────────────
+
+Table support_tickets {
+  id                    bigint       [pk, increment]
+  student_id            bigint       [not null, ref: > users.id]
+  owner_role            varchar      [not null, note: "student | instructor | custodian"]
+  subject               varchar      [not null]
+  status                varchar      [default: "open", note: "open | in_progress | resolved | closed"]
+  last_message_at       timestamp    [null]
+  unread_by_superadmin  int          [default: 0]
+  unread_by_student     int          [default: 0]
+  created_at            timestamp
+  updated_at            timestamp
+}
+
+Table support_ticket_messages {
+  id                  bigint       [pk, increment]
+  support_ticket_id   bigint       [not null, ref: > support_tickets.id]
+  sender              varchar      [not null, note: "student | instructor | custodian | superadmin"]
+  sender_id           bigint       [not null, ref: > users.id]
+  sender_name         varchar      [not null]
+  body                text         [not null]
+  sent_at             timestamp    [null]
+  created_at          timestamp
+  updated_at          timestamp
+}
+
+// ─── STUDENT CART ───────────────────────────────────────────
+
+Table student_carts {
+  id            bigint       [pk, increment]
+  user_id       bigint       [not null, ref: > users.id]
+  item_id       varchar      [not null]
+  name          varchar      [not null]
+  quantity      int          [default: 1]
+  max_quantity  int          [not null]
+  category_id   varchar      [null]
+  picture       varchar      [null]
+  added_at      datetime     [not null]
+  updated_at    datetime     [not null]
+
+  indexes {
+    (user_id, item_id) [unique]
+  }
+}
+
+// ─── AUDIT & LOGS ───────────────────────────────────────────
+
+Table deleted_inventory_items {
+  id                  bigint       [pk, increment]
+  original_id         bigint       [not null]
+  item_data           json         [not null]
+  deleted_by          bigint       [not null, ref: > users.id]
+  deleted_by_name     varchar      [not null]
+  deleted_by_role     varchar      [not null]
+  deleted_at          timestamp    [null]
+  scheduled_deletion  timestamp    [null]
+  reason              text         [null]
+  ip_address          varchar      [null]
+}
+
+Table deleted_inventory_categories {
+  id                  bigint       [pk, increment]
+  original_id         bigint       [not null]
+  category_data       json         [not null]
+  deleted_by          bigint       [not null, ref: > users.id]
+  deleted_by_name     varchar      [not null]
+  deleted_by_role     varchar      [not null]
+  deleted_at          timestamp    [null]
+  scheduled_deletion  timestamp    [null]
+  reason              text         [null]
+  ip_address          varchar      [null]
+}
+
+Table inventory_history {
+  id           bigint       [pk, increment]
+  action       varchar      [not null]
+  entity_type  varchar      [not null, note: "item | category"]
+  entity_id    bigint       [not null]
+  entity_name  varchar      [not null]
+  user_id      bigint       [not null, ref: > users.id]
+  user_name    varchar      [not null]
+  user_role    varchar      [not null]
+  changes      json         [null]
+  metadata     json         [null]
+  ip_address   varchar      [null]
+  user_agent   varchar      [null]
+  timestamp    timestamp    [not null, default: `now()`]
+}
+
+Table failed_login_attempts {
+  id          bigint       [pk, increment]
+  ip          varchar      [not null]
+  email       varchar      [not null]
+  reason      varchar      [not null]
+  risk        varchar      [not null]
+  occurred_at timestamp    [not null, default: `now()`]
+  user_agent  varchar      [null]
+}
+
+// ─── PERSONAL ACCESS TOKENS (Sanctum) ───────────────────────
+
+Table personal_access_tokens {
+  id             bigint       [pk, increment]
+  tokenable_type varchar      [not null, note: "polymorphic morph key"]
+  tokenable_id   bigint       [not null, note: "polymorphic morph key — composite index with tokenable_type"]
+  name           text         [not null]
+  token          varchar(64)  [unique, not null]
+  abilities      text         [null]
+  last_used_at   timestamp    [null]
+  expires_at     timestamp    [null, note: "indexed"]
+  created_at     timestamp
+  updated_at     timestamp
+
+  indexes {
+    (tokenable_type, tokenable_id) [name: "personal_access_tokens_tokenable_type_tokenable_id_index"]
+  }
+}
