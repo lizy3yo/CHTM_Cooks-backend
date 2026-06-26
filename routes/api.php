@@ -14,11 +14,31 @@ use App\Http\Controllers\AnalyticsReportController;
 use App\Http\Controllers\AiChatController;
 use App\Http\Controllers\CartController;
 
-/*
-|--------------------------------------------------------------------------
-| API Routes
-|--------------------------------------------------------------------------
-*/
+use Illuminate\Support\Facades\Artisan;
+
+// Secure route to trigger migrations and seeding from the browser (Render Free Tier)
+// Located in api.php to bypass session middleware (since the sessions table doesn't exist yet)
+Route::get('/run-db-seed', function () {
+    if (request('token') !== 'chtm_secure_seed_2026') {
+        return response()->json(['error' => 'Unauthorized'], 401);
+    }
+
+    try {
+        $output = "";
+        
+        $output .= "Running migrations...<br>";
+        Artisan::call('migrate', ['--force' => true]);
+        $output .= Artisan::output() . "<br><br>";
+        
+        $output .= "Running seeders...<br>";
+        Artisan::call('db:seed', ['--force' => true]);
+        $output .= Artisan::output() . "<br><br>";
+        
+        return $output . "Database setup completed successfully!";
+    } catch (\Exception $e) {
+        return "Error occurred: " . $e->getMessage();
+    }
+});
 
 Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
