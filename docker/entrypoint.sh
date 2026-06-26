@@ -15,5 +15,11 @@ if [ "${RUN_MIGRATIONS}" = "true" ]; then
     php artisan migrate --force
 fi
 
+# Execute seeding if RUN_SEEDERS environment variable is true
+if [ "${RUN_SEEDERS}" = "true" ]; then
+    echo "Running database seeding..."
+    php artisan db:seed --force
+fi
+
 # Execute the main container CMD
 exec "$@"
