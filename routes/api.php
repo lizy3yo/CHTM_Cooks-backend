@@ -107,6 +107,9 @@ Route::middleware('jwt.auth')->group(function () {
     // Export
     Route::get('/inventory/export', [InventoryController::class, 'export']);
 
+    // Borrowers tracking
+    Route::get('/inventory/borrowers', [InventoryController::class, 'getAllBorrowers']);
+
     // Class Codes
     Route::get('/class-codes', [ClassCodeController::class, 'getAll']);
     Route::get('/class-codes/stats', [ClassCodeController::class, 'getStats']);

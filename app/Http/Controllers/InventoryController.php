@@ -51,6 +51,14 @@ class InventoryController extends Controller
      */
     private function transformItem($item)
     {
+        $released = (int) \App\Models\BorrowRequestItem::where('item_id', $item->id)
+            ->whereHas('borrowRequest', function ($q) {
+                $q->whereIn('status', ['borrowed', 'pending_return', 'pending_appeal']);
+            })
+            ->sum('quantity');
+            
+        $available = (int) (($item->quantity ?? 0) + ($item->donations ?? 0));
+
         return [
             'id' => (string) $item->id,
             'name' => $item->name,
@@ -62,7 +70,10 @@ class InventoryController extends Controller
             'quantity' => (int) $item->quantity,
             'donations' => (int) $item->donations,
             'eomCount' => (int) $item->eom_count,
-            'variance' => (int) (($item->quantity ?? 0) + ($item->donations ?? 0) - ($item->eom_count ?? 0)),
+            'released' => $released,
+            'available' => $available,
+            'currentCount' => $available + $released, // Total stock = in storage + released
+            'variance' => (int) ($available - ($item->eom_count ?? 0)),
             'description' => $item->description,
             'status' => $item->status,
             'unitPrice' => $item->unit_price ? (float) $item->unit_price : null,
@@ -1087,5 +1098,49 @@ class InventoryController extends Controller
         };
 
         return response()->stream($callback, 200, $headers);
+    }
+
+    public function getAllBorrowers(Request $request)
+    {
+        $borrowRequestItems = \App\Models\BorrowRequestItem::whereHas('borrowRequest', function($q) {
+                $q->whereIn('status', ['borrowed', 'pending_return', 'pending_appeal']);
+            })
+            ->with(['borrowRequest.student', 'borrowRequest.instructor', 'borrowRequest.classCode', 'item'])
+            ->get();
+            
+        $borrowers = $borrowRequestItems->map(function($bri) {
+            $br = $bri->borrowRequest;
+            return [
+                'borrow_request_id' => $br->id,
+                'item_id' => $bri->item_id,
+                'item_name' => $bri->name ?? ($bri->item ? $bri->item->name : 'Unknown Item'),
+                'item_specification' => $bri->item ? $bri->item->specification : '',
+                'item_category' => $bri->category ?? ($bri->item ? $bri->item->category : ''),
+                'item_picture' => $bri->picture ?? ($bri->item ? $bri->item->picture : null),
+                'quantity' => $bri->quantity,
+                'due_date' => $bri->due_date ? $bri->due_date->toIso8601String() : ($br->return_date ? $br->return_date->toIso8601String() : null),
+                'borrow_date' => $br->borrow_date ? $br->borrow_date->toIso8601String() : null,
+                'status' => $br->status,
+                'student' => $br->student ? [
+                    'id' => $br->student->id,
+                    'name' => trim($br->student->first_name . ' ' . $br->student->last_name),
+                    'email' => $br->student->email,
+                ] : null,
+                'instructor' => $br->instructor ? [
+                    'id' => $br->instructor->id,
+                    'name' => trim($br->instructor->first_name . ' ' . $br->instructor->last_name),
+                    'email' => $br->instructor->email,
+                ] : null,
+                'class_code' => $br->classCode ? [
+                    'id' => $br->classCode->id,
+                    'code' => $br->classCode->code,
+                    'name' => $br->classCode->name,
+                ] : null,
+            ];
+        });
+
+        return response()->json([
+            'borrowers' => $borrowers
+        ]);
     }
 }
