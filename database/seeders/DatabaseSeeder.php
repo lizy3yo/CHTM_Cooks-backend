@@ -94,14 +94,14 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
-        // 5. Seed Auditor
+        // 5. Seed Supervisor
         User::firstOrCreate(
-            ['email' => 'auditor@example.com'],
+            ['email' => 'supervisor@example.com'],
             [
                 'password' => Hash::make('password123'),
-                'role' => 'auditor',
+                'role' => 'supervisor',
                 'first_name' => 'System',
-                'last_name' => 'Auditor',
+                'last_name' => 'Supervisor',
                 'is_active' => true,
                 'email_verified' => true,
             ]

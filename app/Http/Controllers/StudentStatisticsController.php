@@ -56,7 +56,7 @@ class StudentStatisticsController extends Controller
         }
 
         try {
-            if ($user->role === 'superadmin' || $user->role === 'auditor') {
+            if ($user->role === 'superadmin' || $user->role === 'supervisor') {
                 $totalUsers = User::count();
                 $studentCount = User::where('role', 'student')->count();
                 $instructorCount = User::where('role', 'instructor')->count();

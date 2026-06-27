@@ -9,7 +9,7 @@ return new class extends Migration {
         Schema::create('notifications', function (Blueprint $table) {
             $table->id();
             $table->foreignId('user_id')->constrained('users')->onDelete('cascade');
-            $table->enum('audience_role', ['student', 'instructor', 'custodian', 'superadmin', 'auditor']);
+            $table->enum('audience_role', ['student', 'instructor', 'custodian', 'superadmin', 'supervisor']);
             $table->string('type');
             $table->string('title');
             $table->text('message');

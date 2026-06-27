@@ -13,7 +13,7 @@ use Carbon\Carbon;
 class UserController extends Controller
 {
     /**
-     * @param \App\Models\User $u
+     * @param User $u
      * @return array
      */
     private function transformUser($u)
@@ -92,7 +92,7 @@ class UserController extends Controller
         $validator = Validator::make($request->all(), [
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8',
-            'role' => 'required|in:student,custodian,instructor,superadmin,auditor',
+            'role' => 'required|in:student,custodian,instructor,superadmin,supervisor',
             'firstName' => 'required|string|max:100',
             'lastName' => 'required|string|max:100',
             'yearLevel' => 'nullable|string',
@@ -137,7 +137,7 @@ class UserController extends Controller
             'firstName' => 'sometimes|required|string|max:100',
             'lastName' => 'sometimes|required|string|max:100',
             'isActive' => 'sometimes|boolean',
-            'role' => 'sometimes|required|in:student,custodian,instructor,superadmin,auditor',
+            'role' => 'sometimes|required|in:student,custodian,instructor,superadmin,supervisor',
             'yearLevel' => 'nullable|string',
             'block' => 'nullable|string'
         ]);
