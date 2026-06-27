@@ -702,7 +702,7 @@ class AnalyticsReportController extends Controller
     public function getReport(Request $request)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['instructor', 'custodian', 'superadmin', 'supervisor'])) {
+        if (!$user || !in_array($user->role, ['instructor', 'custodian', 'superadmin', 'admin'])) {
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
@@ -730,7 +730,7 @@ class AnalyticsReportController extends Controller
     public function getSummary(Request $request)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['instructor', 'custodian', 'superadmin', 'supervisor'])) {
+        if (!$user || !in_array($user->role, ['instructor', 'custodian', 'superadmin', 'admin'])) {
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
@@ -806,7 +806,7 @@ class AnalyticsReportController extends Controller
     public function export(Request $request)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['instructor', 'custodian', 'superadmin', 'supervisor'])) {
+        if (!$user || !in_array($user->role, ['instructor', 'custodian', 'superadmin', 'admin'])) {
             return response('Forbidden', 403);
         }
 
