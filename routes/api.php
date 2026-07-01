@@ -25,15 +25,15 @@ Route::get('/run-db-seed', function () {
 
     try {
         $output = "";
-        
+
         $output .= "Running migrations...<br>";
         Artisan::call('migrate', ['--force' => true]);
         $output .= Artisan::output() . "<br><br>";
-        
+
         $output .= "Running seeders...<br>";
         Artisan::call('db:seed', ['--force' => true]);
         $output .= Artisan::output() . "<br><br>";
-        
+
         return $output . "Database setup completed successfully!";
     } catch (\Exception $e) {
         return "Error occurred: " . $e->getMessage();
@@ -47,8 +47,84 @@ Route::get('/clear-inventory', function () {
     }
 
     try {
-        Artisan::call('inventory:clear');
-        return nl2br(Artisan::output()) ?: "Inventory cleared successfully!";
+        // Set script execution time limit for this batch
+        set_time_limit(60);
+
+        // Fetch a small chunk of items (30 per batch to prevent Cloudinary HTTP timeouts)
+        $chunkSize = 30;
+
+        $items = \App\Models\InventoryItem::withTrashed()->take($chunkSize)->get();
+        $totalRemaining = \App\Models\InventoryItem::withTrashed()->count();
+
+        if ($items->isEmpty()) {
+            // Reset category item counts to 0
+            \App\Models\InventoryCategory::query()->update(['item_count' => 0]);
+            // Clear deleted items log
+            \App\Models\DeletedInventoryItem::truncate();
+
+            return "<h3>Inventory cleared successfully! All items and Cloudinary assets have been removed.</h3>";
+        }
+
+        $deletedImages = 0;
+        $deletedRecords = 0;
+        foreach ($items as $item) {
+            if ($item->picture) {
+                try {
+                    \App\Services\StorageService::deleteByUrl($item->picture, 'inventory');
+                    $deletedImages++;
+                } catch (\Exception $e) {
+                    \Illuminate\Support\Facades\Log::error("Failed to delete image: {$item->picture}. Error: " . $e->getMessage());
+                }
+            }
+            $item->forceDelete();
+            $deletedRecords++;
+        }
+
+        $remainingAfter = $totalRemaining - $deletedRecords;
+
+        if ($remainingAfter <= 0) {
+            // Clean up counters and deleted logs
+            \App\Models\InventoryCategory::query()->update(['item_count' => 0]);
+            \App\Models\DeletedInventoryItem::truncate();
+            return "<h3>Inventory cleared successfully! Deleted {$deletedRecords} items and {$deletedImages} images in the final step.</h3>";
+        }
+
+        // Auto-refresh using HTML meta tag to continue with the next batch
+        $nextUrl = request()->fullUrl();
+
+        return <<<HTML
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta http-equiv="refresh" content="1;url={$nextUrl}">
+                <title>Clearing Inventory...</title>
+                <style>
+                    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 40px; background: #f9fafb; color: #111827; }
+                    .card { max-width: 500px; margin: 50px auto 0; background: white; padding: 32px; border-radius: 16px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05); border: 1px solid #f3f4f6; text-align: center; }
+                    .progress-bar { height: 8px; width: 100%; background: #e5e7eb; border-radius: 4px; overflow: hidden; margin: 24px 0; }
+                    .progress { height: 100%; background: #db2777; width: 35%; animation: pulse 1.5s infinite ease-in-out; }
+                    h2 { color: #db2777; margin-top: 0; font-size: 20px; font-weight: 700; }
+                    p { color: #4b5563; font-size: 14px; margin: 8px 0; }
+                    .stats { background: #f9fafb; border-radius: 8px; padding: 12px; margin-top: 16px; border: 1px solid #f3f4f6; }
+                    @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h2>Purging Inventory & Cloudinary...</h2>
+                    <div class="stats">
+                        <p><strong>Cleared in this batch:</strong> {$deletedRecords} items</p>
+                        <p><strong>Cloudinary images deleted:</strong> {$deletedImages}</p>
+                    </div>
+                    <p style="margin-top: 16px;"><strong>Remaining items:</strong> {$remainingAfter}</p>
+                    <div class="progress-bar">
+                        <div class="progress"></div>
+                    </div>
+                    <p style="font-size: 12px; color: #9ca3af;">Auto-refreshing next batch in 1 second. Please keep this tab open.</p>
+                </div>
+            </body>
+            </html>
+HTML;
     } catch (\Exception $e) {
         return "Error occurred: " . $e->getMessage();
     }
@@ -63,12 +139,12 @@ Route::prefix('auth')->group(function () {
     Route::post('/resend-verification', [AuthController::class, 'resendVerification']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
-    
+
     // Protected auth/profile routes
     Route::middleware('jwt.auth')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
-        
+
         Route::get('/profile', [UserController::class, 'getProfile']);
         Route::patch('/profile', [UserController::class, 'updateProfile']);
         Route::post('/profile/photo', [UserController::class, 'uploadProfilePhoto']);
