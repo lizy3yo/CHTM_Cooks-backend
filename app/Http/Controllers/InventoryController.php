@@ -935,9 +935,15 @@ class InventoryController extends Controller
 
         $file = $request->file('file');
         
-        $result = StorageService::upload($file, 'inventory');
-
-        return response()->json($result);
+        try {
+            $result = StorageService::upload($file, 'inventory');
+            return response()->json($result);
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Upload failed',
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 
     // ==========================================

@@ -38,16 +38,34 @@ class StorageService
                 $signatureStr = rtrim($signatureStr, '&') . $apiSecret;
                 $signature = sha1($signatureStr);
 
-                $response = Http::attach(
-                    'file',
-                    file_get_contents($file->getRealPath()),
-                    $file->getClientOriginalName()
-                )->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/upload", [
-                    'api_key' => $apiKey,
-                    'timestamp' => $timestamp,
-                    'signature' => $signature,
-                    'folder' => $cloudinaryFolder,
-                ]);
+                $uploadCall = function($verifySsl = true) use ($cloudName, $file, $apiKey, $timestamp, $signature, $cloudinaryFolder) {
+                    $client = Http::asMultipart();
+                    if (!$verifySsl) {
+                        $client = $client->withoutVerifying();
+                    }
+                    return $client->attach(
+                        'file',
+                        file_get_contents($file->getRealPath()),
+                        $file->getClientOriginalName()
+                    )->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/upload", [
+                        'api_key' => $apiKey,
+                        'timestamp' => $timestamp,
+                        'signature' => $signature,
+                        'folder' => $cloudinaryFolder,
+                    ]);
+                };
+
+                try {
+                    $response = $uploadCall(true);
+                } catch (\Exception $e) {
+                    $errStr = strtolower($e->getMessage());
+                    if (str_contains($errStr, 'ssl') || str_contains($errStr, 'certificate') || str_contains($errStr, 'issuer')) {
+                        Log::warning('Cloudinary upload SSL error detected. Retrying without SSL verification: ' . $e->getMessage());
+                        $response = $uploadCall(false);
+                    } else {
+                        throw $e;
+                    }
+                }
 
                 if ($response->successful()) {
                     $data = $response->json();
@@ -57,11 +75,15 @@ class StorageService
                         'filename' => $data['public_id'],
                     ];
                 } else {
-                    Log::error('Cloudinary upload error response: ' . $response->body());
+                    $cloudinaryError = 'Cloudinary upload error response: ' . $response->body();
+                    Log::error($cloudinaryError);
                 }
             } catch (\Exception $e) {
-                Log::error('Cloudinary upload exception: ' . $e->getMessage());
+                $cloudinaryError = 'Cloudinary upload exception: ' . $e->getMessage();
+                Log::error($cloudinaryError);
             }
+        } else {
+            $cloudinaryError = 'Cloudinary is not configured (missing cloud_name, api_key, or api_secret).';
         }
 
         // Fallback to local disk storage
@@ -76,7 +98,11 @@ class StorageService
             ];
         } catch (\Exception $e) {
             Log::error('Local storage fallback failed: ' . $e->getMessage());
-            throw new \Exception('Failed to upload file: both Cloudinary and local storage fallback failed.');
+            $detailedError = 'Failed to upload file. Local storage fallback failed: ' . $e->getMessage();
+            if ($cloudinaryError) {
+                $detailedError .= ' | Cloudinary Error: ' . $cloudinaryError;
+            }
+            throw new \Exception($detailedError);
         }
     }
 
@@ -113,18 +139,36 @@ class StorageService
                 $signatureStr = rtrim($signatureStr, '&') . $apiSecret;
                 $signature = sha1($signatureStr);
 
-                $response = Http::attach(
-                    'file',
-                    $binaryData,
-                    "{$filename}.png"
-                )->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/upload", [
-                    'api_key' => $apiKey,
-                    'timestamp' => $timestamp,
-                    'signature' => $signature,
-                    'folder' => "{$cloudinaryFolder}/{$folder}",
-                    'public_id' => $filename,
-                    'overwrite' => 'true',
-                ]);
+                $uploadCall = function($verifySsl = true) use ($cloudName, $binaryData, $filename, $apiKey, $timestamp, $signature, $cloudinaryFolder, $folder) {
+                    $client = Http::asMultipart();
+                    if (!$verifySsl) {
+                        $client = $client->withoutVerifying();
+                    }
+                    return $client->attach(
+                        'file',
+                        $binaryData,
+                        "{$filename}.png"
+                    )->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/upload", [
+                        'api_key' => $apiKey,
+                        'timestamp' => $timestamp,
+                        'signature' => $signature,
+                        'folder' => "{$cloudinaryFolder}/{$folder}",
+                        'public_id' => $filename,
+                        'overwrite' => 'true',
+                    ]);
+                };
+
+                try {
+                    $response = $uploadCall(true);
+                } catch (\Exception $e) {
+                    $errStr = strtolower($e->getMessage());
+                    if (str_contains($errStr, 'ssl') || str_contains($errStr, 'certificate') || str_contains($errStr, 'issuer')) {
+                        Log::warning('Cloudinary raw upload SSL error detected. Retrying without SSL verification: ' . $e->getMessage());
+                        $response = $uploadCall(false);
+                    } else {
+                        throw $e;
+                    }
+                }
 
                 if ($response->successful()) {
                     $data = $response->json();
