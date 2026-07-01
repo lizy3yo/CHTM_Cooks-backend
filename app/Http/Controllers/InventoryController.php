@@ -46,7 +46,7 @@ class InventoryController extends Controller
 
     /**
      * Transform Item to frontend representation
-     * @param \App\Models\InventoryItem|\stdClass $item
+     * @param InventoryItem|\stdClass $item
      * @return array
      */
     private function transformItem($item)
@@ -87,7 +87,7 @@ class InventoryController extends Controller
 
     /**
      * Transform Category to frontend representation
-     * @param \App\Models\InventoryCategory|\stdClass $category
+     * @param InventoryCategory|\stdClass $category
      * @return array
      */
     private function transformCategory($category)
@@ -317,7 +317,7 @@ class InventoryController extends Controller
         // Soft delete items inside this category too
         $items = InventoryItem::where('category_id', $category->id)->get();
         foreach ($items as $item) {
-            /** @var \App\Models\InventoryItem $item */
+            /** @var InventoryItem $item */
             DeletedInventoryItem::create([
                 'original_id' => $item->id,
                 'item_data' => $item->toArray(),
@@ -574,9 +574,71 @@ class InventoryController extends Controller
 
         $this->logActivity('item_deleted', 'item', $item->id, $item->name, null, ['reason' => $reason]);
 
+        // Delete from Cloudinary if configured
+        if ($item->picture) {
+            StorageService::deleteByUrl($item->picture, 'inventory');
+        }
+
         $item->delete(); // Soft delete using softDeletes trait
 
         return response()->json(['success' => true, 'message' => 'Item deleted successfully']);
+    }
+
+    public function bulkDeleteItems(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'ids' => 'required|array',
+            'ids.*' => 'required|integer',
+            'reason' => 'nullable|string'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['error' => 'Validation failed', 'details' => $validator->errors()], 400);
+        }
+
+        $ids = $request->ids;
+        $reason = $request->input('reason', 'Bulk deletion');
+        $user = auth()->user();
+
+        $items = InventoryItem::whereIn('id', $ids)->get();
+        $deletedCount = 0;
+
+        foreach ($items as $item) {
+            // Copy to deleted inventory items
+            DeletedInventoryItem::create([
+                'original_id' => $item->id,
+                'item_data' => $item->toArray(),
+                'deleted_by' => $user->id,
+                'deleted_by_name' => $user->first_name . ' ' . $user->last_name,
+                'deleted_by_role' => $user->role,
+                'deleted_at' => Carbon::now(),
+                'scheduled_deletion' => Carbon::now()->addDays(30),
+                'reason' => $reason,
+                'ip_address' => $request->ip(),
+            ]);
+
+            // Decrement category count
+            if ($item->category_id) {
+                InventoryCategory::where('id', $item->category_id)->decrement('item_count');
+            }
+
+            // Log activity
+            $this->logActivity('item_deleted', 'item', $item->id, $item->name, null, ['reason' => $reason]);
+
+            // Delete from Cloudinary if configured
+            if ($item->picture) {
+                StorageService::deleteByUrl($item->picture, 'inventory');
+            }
+
+            // Soft delete
+            $item->delete();
+            $deletedCount++;
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Successfully deleted {$deletedCount} items"
+        ]);
     }
 
     public function bulkCreateItems(Request $request)
@@ -898,6 +960,9 @@ class InventoryController extends Controller
 
             $item = InventoryItem::withTrashed()->find($deletedDoc->original_id);
             if ($item) {
+                if ($item->picture) {
+                    StorageService::deleteByUrl($item->picture, 'inventory');
+                }
                 $item->forceDelete();
             }
 

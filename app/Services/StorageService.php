@@ -11,7 +11,7 @@ class StorageService
     /**
      * Upload a file to Cloudinary (if configured) or fallback to local public disk storage.
      *
-     * @param  \Illuminate\Http\UploadedFile  $file
+     * @param  UploadedFile  $file
      * @param  string  $folder
      * @return array  ['url' => string, 'filename' => string]
      */
@@ -244,6 +244,75 @@ class StorageService
             }
         } catch (\Exception $e) {
             Log::error('Local storage delete failed: ' . $e->getMessage());
+        }
+
+        return false;
+    }
+
+    /**
+     * Delete an image from Cloudinary (or local storage) using its full URL.
+     *
+     * @param string|null $url
+     * @param string $folder
+     * @return bool
+     */
+    public static function deleteByUrl(?string $url, string $folder = 'inventory'): bool
+    {
+        if (!$url) {
+            return false;
+        }
+
+        // Check if it's a Cloudinary URL
+        if (str_contains($url, 'res.cloudinary.com')) {
+            try {
+                $path = parse_url($url, PHP_URL_PATH);
+                if (!$path) {
+                    return false;
+                }
+
+                $segments = explode('/', trim($path, '/'));
+                $uploadIndex = array_search('upload', $segments);
+
+                if ($uploadIndex === false || $uploadIndex >= count($segments) - 1) {
+                    return false;
+                }
+
+                $publicSegments = array_slice($segments, $uploadIndex + 1);
+                // Remove version segment (e.g. v1775488521)
+                if (count($publicSegments) > 0 && preg_match('/^v\d+$/', $publicSegments[0])) {
+                    array_shift($publicSegments);
+                }
+
+                if (count($publicSegments) === 0) {
+                    return false;
+                }
+
+                $publicIdWithExtension = implode('/', $publicSegments);
+                $publicId = pathinfo($publicIdWithExtension, PATHINFO_FILENAME);
+                $dirname = pathinfo($publicIdWithExtension, PATHINFO_DIRNAME);
+                if ($dirname && $dirname !== '.') {
+                    $publicId = $dirname . '/' . $publicId;
+                }
+
+                return self::delete($publicId, $folder);
+            } catch (\Exception $e) {
+                Log::error('Failed to delete Cloudinary image by URL: ' . $e->getMessage());
+                return false;
+            }
+        }
+
+        // Fallback to local storage delete if it's a local storage URL
+        try {
+            $storageSegment = '/storage/';
+            $pos = strpos($url, $storageSegment);
+            if ($pos !== false) {
+                $localPath = substr($url, $pos + strlen($storageSegment));
+                if (\Illuminate\Support\Facades\Storage::disk('public')->exists($localPath)) {
+                    return \Illuminate\Support\Facades\Storage::disk('public')->delete($localPath);
+                }
+            }
+        } catch (\Exception $e) {
+            Log::error('Local storage delete by URL failed: ' . $e->getMessage());
         }
 
         return false;

@@ -80,6 +80,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::post('/inventory/items', [InventoryController::class, 'createItem']);
     Route::post('/inventory/items/bulk', [InventoryController::class, 'bulkCreateItems']);
     Route::patch('/inventory/items/{id}', [InventoryController::class, 'updateItem']);
+    Route::delete('/inventory/items/bulk-delete', [InventoryController::class, 'bulkDeleteItems']);
     Route::delete('/inventory/items/{id}', [InventoryController::class, 'deleteItem']);
 
     // Required Items
