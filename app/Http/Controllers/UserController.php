@@ -253,6 +253,34 @@ class UserController extends Controller
 
     public function uploadProfilePhoto(Request $request)
     {
+        $user = auth()->user();
+
+        // Check if pre-uploaded profile photo details are provided (e.g. from SvelteKit BFF)
+        if ($request->filled('profile_photo_url') && $request->filled('profile_photo_public_id')) {
+            $validator = Validator::make($request->all(), [
+                'profile_photo_url' => 'required|url',
+                'profile_photo_public_id' => 'required|string',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json(['error' => 'Validation failed', 'details' => $validator->errors()], 400);
+            }
+
+            // Delete old profile photo if exists and is different
+            if ($user->profile_photo_public_id && $user->profile_photo_public_id !== $request->profile_photo_public_id) {
+                StorageService::delete($user->profile_photo_public_id, 'profiles');
+            }
+
+            $user->profile_photo_url = $request->profile_photo_url;
+            $user->profile_photo_public_id = $request->profile_photo_public_id;
+            $user->save();
+
+            return response()->json([
+                'user' => $this->transformUser($user)
+            ]);
+        }
+
+        // Otherwise fallback to standard file upload validation and processing
         $validator = Validator::make($request->all(), [
             'file' => 'required|image|max:5120' // Max 5MB
         ]);
@@ -261,7 +289,6 @@ class UserController extends Controller
             return response()->json(['error' => 'Validation failed', 'details' => $validator->errors()], 400);
         }
 
-        $user = auth()->user();
         $file = $request->file('file');
 
         // Delete old profile photo if exists
