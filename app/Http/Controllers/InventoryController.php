@@ -1140,9 +1140,24 @@ class InventoryController extends Controller
 
         $callback = function() use ($items, $columns) {
             $file = fopen('php://output', 'w');
-            
-            // Map header column titles
-            $headerTitles = array_map(fn($col) => ucfirst(preg_replace('/(?<!^)[A-Z]/', ' $0', $col)), $columns);
+
+            // Explicit human-readable labels – must match the import parser's known headers
+            $columnLabels = [
+                'id'                    => 'ID',
+                'name'                  => 'Name',
+                'category'              => 'Category',
+                'specification'         => 'Specification',
+                'toolsOrEquipment'      => 'Tools or Equipment',
+                'quantity'              => 'Current Count',
+                'donations'             => 'Donations',
+                'eomCount'              => 'EOM Count',
+                'unitPrice'             => 'Unit Price',
+                'isrequired'            => 'Required',
+                'maxQuantityPerRequest' => 'Max Quantity Per Request',
+                'image'                 => 'Picture',
+                'picture'               => 'Picture',
+            ];
+            $headerTitles = array_map(fn($col) => $columnLabels[$col] ?? ucfirst(preg_replace('/(?<!^)[A-Z]/', ' $0', $col)), $columns);
             fputcsv($file, $headerTitles);
 
             foreach ($items as $item) {
@@ -1160,6 +1175,8 @@ class InventoryController extends Controller
                         case 'unitPrice': $row[] = $item->unit_price; break;
                         case 'isrequired': $row[] = $item->is_required ? 'Yes' : 'No'; break;
                         case 'maxQuantityPerRequest': $row[] = $item->max_quantity_per_request; break;
+                        case 'image':
+                        case 'picture': $row[] = $item->picture ?? ''; break;
                         default: $row[] = '';
                     }
                 }
