@@ -40,6 +40,20 @@ Route::get('/run-db-seed', function () {
     }
 });
 
+// Secure route to clear inventory and Cloudinary assets from the browser (Render Free Tier)
+Route::get('/clear-inventory', function () {
+    if (request('token') !== 'chtm_secure_seed_2026') {
+        return response()->json(['error' => 'Unauthorized'], 401);
+    }
+
+    try {
+        Artisan::call('inventory:clear');
+        return nl2br(Artisan::output()) ?: "Inventory cleared successfully!";
+    } catch (\Exception $e) {
+        return "Error occurred: " . $e->getMessage();
+    }
+});
+
 Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/register', [AuthController::class, 'register']);
