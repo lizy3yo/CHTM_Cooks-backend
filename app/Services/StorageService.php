@@ -183,4 +183,70 @@ class StorageService
 
         return null;
     }
+
+    /**
+     * Delete a file from Cloudinary (if configured) or from local public disk storage.
+     *
+     * @param string $publicId
+     * @param string $folder Only used for local storage fallback
+     * @return bool
+     */
+    public static function delete(string $publicId, string $folder = 'profiles'): bool
+    {
+        $cloudName = config('services.cloudinary.cloud_name');
+        $apiKey = config('services.cloudinary.api_key');
+        $apiSecret = config('services.cloudinary.api_secret');
+
+        if ($publicId && $cloudName && $apiKey && $apiSecret) {
+            try {
+                $timestamp = time();
+                $signatureStr = "public_id={$publicId}&timestamp={$timestamp}{$apiSecret}";
+                $signature = sha1($signatureStr);
+
+                $destroyCall = function($verifySsl = true) use ($cloudName, $publicId, $apiKey, $timestamp, $signature) {
+                    $client = Http::asForm();
+                    if (!$verifySsl) {
+                        $client = $client->withoutVerifying();
+                    }
+                    return $client->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/destroy", [
+                        'public_id' => $publicId,
+                        'api_key' => $apiKey,
+                        'timestamp' => $timestamp,
+                        'signature' => $signature
+                    ]);
+                };
+
+                try {
+                    $response = $destroyCall(true);
+                } catch (\Exception $e) {
+                    $errStr = strtolower($e->getMessage());
+                    if (str_contains($errStr, 'ssl') || str_contains($errStr, 'certificate') || str_contains($errStr, 'issuer')) {
+                        Log::warning('Cloudinary destroy SSL error detected. Retrying without SSL verification: ' . $e->getMessage());
+                        $response = $destroyCall(false);
+                    } else {
+                        throw $e;
+                    }
+                }
+
+                if ($response->successful() && $response->json('result') === 'ok') {
+                    return true;
+                }
+            } catch (\Exception $e) {
+                Log::error('Cloudinary destroy exception: ' . $e->getMessage());
+            }
+        }
+
+        // Local storage delete fallback
+        try {
+            $localPath = $folder . '/' . $publicId;
+            if (\Illuminate\Support\Facades\Storage::disk('public')->exists($localPath)) {
+                return \Illuminate\Support\Facades\Storage::disk('public')->delete($localPath);
+            }
+        } catch (\Exception $e) {
+            Log::error('Local storage delete failed: ' . $e->getMessage());
+        }
+
+        return false;
+    }
 }
+

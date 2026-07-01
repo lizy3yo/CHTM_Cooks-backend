@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use App\Services\StorageService;
 use Carbon\Carbon;
 
 class UserController extends Controller
@@ -263,126 +264,25 @@ class UserController extends Controller
         $user = auth()->user();
         $file = $request->file('file');
 
-        $cloudName = config('services.cloudinary.cloud_name');
-        $apiKey = config('services.cloudinary.api_key');
-        $apiSecret = config('services.cloudinary.api_secret');
-        $folder = 'profiles';
-
-        $cloudinaryError = null;
-
-        if ($cloudName && $apiKey && $apiSecret) {
-            try {
-                // If old photo exists on Cloudinary, delete it first
-                if ($user->profile_photo_public_id) {
-                    $timestamp = time();
-                    $signatureStr = "public_id={$user->profile_photo_public_id}&timestamp={$timestamp}{$apiSecret}";
-                    $signature = sha1($signatureStr);
-
-                    $destroyCall = function($verifySsl = true) use ($cloudName, $user, $apiKey, $timestamp, $signature) {
-                        $client = Http::asForm();
-                        if (!$verifySsl) {
-                            $client = $client->withoutVerifying();
-                        }
-                        return $client->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/destroy", [
-                            'public_id' => $user->profile_photo_public_id,
-                            'api_key' => $apiKey,
-                            'timestamp' => $timestamp,
-                            'signature' => $signature
-                        ]);
-                    };
-
-                    try {
-                        $destroyCall(true);
-                    } catch (\Exception $e) {
-                        $errStr = strtolower($e->getMessage());
-                        if (str_contains($errStr, 'ssl') || str_contains($errStr, 'certificate') || str_contains($errStr, 'issuer')) {
-                            $destroyCall(false);
-                        }
-                    }
-                }
-
-                $timestamp = time();
-                $params = [
-                    'folder' => $folder,
-                    'timestamp' => $timestamp,
-                ];
-                ksort($params);
-                $signatureStr = "";
-                foreach ($params as $k => $v) {
-                    $signatureStr .= "$k=$v&";
-                }
-                $signatureStr = rtrim($signatureStr, '&') . $apiSecret;
-                $signature = sha1($signatureStr);
-
-                $uploadCall = function($verifySsl = true) use ($cloudName, $file, $apiKey, $timestamp, $signature, $folder) {
-                    $client = Http::asMultipart();
-                    if (!$verifySsl) {
-                        $client = $client->withoutVerifying();
-                    }
-                    return $client->attach(
-                        'file',
-                        file_get_contents($file->getRealPath()),
-                        $file->getClientOriginalName()
-                    )->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/upload", [
-                        'api_key' => $apiKey,
-                        'timestamp' => $timestamp,
-                        'signature' => $signature,
-                        'folder' => $folder,
-                    ]);
-                };
-
-                try {
-                    $response = $uploadCall(true);
-                } catch (\Exception $e) {
-                    $errStr = strtolower($e->getMessage());
-                    if (str_contains($errStr, 'ssl') || str_contains($errStr, 'certificate') || str_contains($errStr, 'issuer')) {
-                        \Log::warning('Cloudinary photo upload SSL error detected. Retrying without SSL verification: ' . $e->getMessage());
-                        $response = $uploadCall(false);
-                    } else {
-                        throw $e;
-                    }
-                }
-
-                if ($response->successful()) {
-                    $data = $response->json();
-                    $user->profile_photo_url = $data['secure_url'];
-                    $user->profile_photo_public_id = $data['public_id'];
-                    $user->save();
-
-                    return response()->json([
-                        'user' => $this->transformUser($user)
-                    ]);
-                } else {
-                    $cloudinaryError = 'Cloudinary photo upload error response: ' . $response->body();
-                    \Log::error($cloudinaryError);
-                }
-            } catch (\Exception $e) {
-                $cloudinaryError = 'Cloudinary photo upload exception: ' . $e->getMessage();
-                \Log::error($cloudinaryError);
-            }
-        } else {
-            $cloudinaryError = 'Cloudinary is not configured.';
+        // Delete old profile photo if exists
+        if ($user->profile_photo_public_id) {
+            StorageService::delete($user->profile_photo_public_id, 'profiles');
         }
 
-        // Local storage fallback
         try {
-            $path = $file->store('profiles', 'public');
-            $user->profile_photo_url = asset('storage/' . $path);
-            $user->profile_photo_public_id = basename($path);
+            $uploadResult = StorageService::upload($file, 'profiles');
+            
+            $user->profile_photo_url = $uploadResult['url'];
+            $user->profile_photo_public_id = $uploadResult['filename'];
             $user->save();
 
             return response()->json([
                 'user' => $this->transformUser($user)
             ]);
         } catch (\Exception $e) {
-            \Log::error('Local profile photo storage fallback failed: ' . $e->getMessage());
-            $message = 'Failed to upload profile photo to both Cloudinary and local storage. Local fallback failed: ' . $e->getMessage();
-            if ($cloudinaryError) {
-                $message .= ' | ' . $cloudinaryError;
-            }
             return response()->json([
                 'error' => 'Upload failed',
-                'message' => $message
+                'message' => $e->getMessage()
             ], 500);
         }
     }
@@ -391,43 +291,8 @@ class UserController extends Controller
     {
         $user = auth()->user();
         
-        $cloudName = config('services.cloudinary.cloud_name');
-        $apiKey = config('services.cloudinary.api_key');
-        $apiSecret = config('services.cloudinary.api_secret');
-
-        if ($user->profile_photo_public_id && $cloudName && $apiKey && $apiSecret) {
-            try {
-                $timestamp = time();
-                $signatureStr = "public_id={$user->profile_photo_public_id}&timestamp={$timestamp}{$apiSecret}";
-                $signature = sha1($signatureStr);
-
-                $destroyCall = function($verifySsl = true) use ($cloudName, $user, $apiKey, $timestamp, $signature) {
-                    $client = Http::asForm();
-                    if (!$verifySsl) {
-                        $client = $client->withoutVerifying();
-                    }
-                    return $client->post("https://api.cloudinary.com/v1_1/{$cloudName}/image/destroy", [
-                        'public_id' => $user->profile_photo_public_id,
-                        'api_key' => $apiKey,
-                        'timestamp' => $timestamp,
-                        'signature' => $signature
-                    ]);
-                };
-
-                try {
-                    $destroyCall(true);
-                } catch (\Exception $e) {
-                    $errStr = strtolower($e->getMessage());
-                    if (str_contains($errStr, 'ssl') || str_contains($errStr, 'certificate') || str_contains($errStr, 'issuer')) {
-                        \Log::warning('Cloudinary photo destroy SSL error detected. Retrying without SSL verification: ' . $e->getMessage());
-                        $destroyCall(false);
-                    } else {
-                        throw $e;
-                    }
-                }
-            } catch (\Exception $e) {
-                \Log::error('Cloudinary destroy exception: ' . $e->getMessage());
-            }
+        if ($user->profile_photo_public_id) {
+            StorageService::delete($user->profile_photo_public_id, 'profiles');
         }
 
         $user->profile_photo_url = null;
