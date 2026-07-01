@@ -17,10 +17,10 @@ class StorageService
      */
     public static function upload(UploadedFile $file, string $folder = 'inventory'): array
     {
-        $cloudName = env('CLOUDINARY_CLOUD_NAME');
-        $apiKey = env('CLOUDINARY_API_KEY');
-        $apiSecret = env('CLOUDINARY_API_SECRET');
-        $cloudinaryFolder = env('CLOUDINARY_FOLDER', $folder);
+        $cloudName = config('services.cloudinary.cloud_name');
+        $apiKey = config('services.cloudinary.api_key');
+        $apiSecret = config('services.cloudinary.api_secret');
+        $cloudinaryFolder = config('services.cloudinary.folder') ?: $folder;
 
         if ($cloudName && $apiKey && $apiSecret) {
             try {
@@ -65,14 +65,19 @@ class StorageService
         }
 
         // Fallback to local disk storage
-        $path = $file->store($folder, 'public');
-        $url = asset('storage/' . $path);
+        try {
+            $path = $file->store($folder, 'public');
+            $url = asset('storage/' . $path);
 
-        return [
-            'success' => true,
-            'url' => $url,
-            'filename' => basename($path),
-        ];
+            return [
+                'success' => true,
+                'url' => $url,
+                'filename' => basename($path),
+            ];
+        } catch (\Exception $e) {
+            Log::error('Local storage fallback failed: ' . $e->getMessage());
+            throw new \Exception('Failed to upload file: both Cloudinary and local storage fallback failed.');
+        }
     }
 
     /**
@@ -86,10 +91,10 @@ class StorageService
      */
     public static function uploadRaw(string $binaryData, string $filename, string $folder = 'emails'): ?string
     {
-        $cloudName = env('CLOUDINARY_CLOUD_NAME');
-        $apiKey = env('CLOUDINARY_API_KEY');
-        $apiSecret = env('CLOUDINARY_API_SECRET');
-        $cloudinaryFolder = env('CLOUDINARY_FOLDER', 'chtm_cooks');
+        $cloudName = config('services.cloudinary.cloud_name');
+        $apiKey = config('services.cloudinary.api_key');
+        $apiSecret = config('services.cloudinary.api_secret');
+        $cloudinaryFolder = config('services.cloudinary.folder') ?: 'chtm_cooks';
 
         if ($cloudName && $apiKey && $apiSecret) {
             try {

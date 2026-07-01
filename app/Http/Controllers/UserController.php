@@ -263,9 +263,9 @@ class UserController extends Controller
         $user = auth()->user();
         $file = $request->file('file');
 
-        $cloudName = env('CLOUDINARY_CLOUD_NAME');
-        $apiKey = env('CLOUDINARY_API_KEY');
-        $apiSecret = env('CLOUDINARY_API_SECRET');
+        $cloudName = config('services.cloudinary.cloud_name');
+        $apiKey = config('services.cloudinary.api_key');
+        $apiSecret = config('services.cloudinary.api_secret');
         $folder = 'profiles';
 
         if ($cloudName && $apiKey && $apiSecret) {
@@ -324,23 +324,31 @@ class UserController extends Controller
         }
 
         // Local storage fallback
-        $path = $file->store('profiles', 'public');
-        $user->profile_photo_url = asset('storage/' . $path);
-        $user->profile_photo_public_id = basename($path);
-        $user->save();
+        try {
+            $path = $file->store('profiles', 'public');
+            $user->profile_photo_url = asset('storage/' . $path);
+            $user->profile_photo_public_id = basename($path);
+            $user->save();
 
-        return response()->json([
-            'user' => $this->transformUser($user)
-        ]);
+            return response()->json([
+                'user' => $this->transformUser($user)
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Local profile photo storage fallback failed: ' . $e->getMessage());
+            return response()->json([
+                'error' => 'Upload failed',
+                'message' => 'Failed to upload profile photo to both Cloudinary and local storage.'
+            ], 500);
+        }
     }
 
     public function removeProfilePhoto()
     {
         $user = auth()->user();
         
-        $cloudName = env('CLOUDINARY_CLOUD_NAME');
-        $apiKey = env('CLOUDINARY_API_KEY');
-        $apiSecret = env('CLOUDINARY_API_SECRET');
+        $cloudName = config('services.cloudinary.cloud_name');
+        $apiKey = config('services.cloudinary.api_key');
+        $apiSecret = config('services.cloudinary.api_secret');
 
         if ($user->profile_photo_public_id && $cloudName && $apiKey && $apiSecret) {
             try {
