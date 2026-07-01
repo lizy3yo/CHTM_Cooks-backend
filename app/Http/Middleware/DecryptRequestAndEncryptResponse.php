@@ -27,37 +27,45 @@ class DecryptRequestAndEncryptResponse
         }
 
         // Decrypt incoming request if it is not a safe method (POST, PUT, PATCH, DELETE) and has content
-        if (!$request->isMethodSafe() && $request->getContent() !== '') {
-            $data = $request->json()->all();
-            
-            if (!isset($data['payload']) || !isset($data['iv']) || !isset($data['tag']) || !isset($data['timestamp'])) {
-                return response()->json(['error' => 'Missing encrypted payload components'], 400);
+        // Skip decryption for multipart requests (e.g. file uploads) as they are not JSON encrypted
+        if (!$request->isMethodSafe()) {
+            $contentType = $request->header('Content-Type') ?? '';
+            if (str_starts_with(strtolower($contentType), 'multipart/')) {
+                return $next($request);
             }
 
-            // Replay attack prevention: verify timestamp (allow 120 seconds clock skew)
-            $timestamp = intval($data['timestamp']);
-            if (abs(time() - $timestamp) > 120) {
-                return response()->json(['error' => 'Request timestamp expired or clock out of sync'], 400);
+            if ($request->getContent() !== '') {
+                $data = $request->json()->all();
+                
+                if (!isset($data['payload']) || !isset($data['iv']) || !isset($data['tag']) || !isset($data['timestamp'])) {
+                    return response()->json(['error' => 'Missing encrypted payload components'], 400);
+                }
+
+                // Replay attack prevention: verify timestamp (allow 120 seconds clock skew)
+                $timestamp = intval($data['timestamp']);
+                if (abs(time() - $timestamp) > 120) {
+                    return response()->json(['error' => 'Request timestamp expired or clock out of sync'], 400);
+                }
+
+                // Decode GCM parts
+                $ciphertext = base64_decode($data['payload']);
+                $iv = base64_decode($data['iv']);
+                $tag = base64_decode($data['tag']);
+
+                // Decrypt raw ciphertext
+                $decryptedRaw = openssl_decrypt($ciphertext, 'aes-256-gcm', $keyBytes, OPENSSL_RAW_DATA, $iv, $tag);
+                if ($decryptedRaw === false) {
+                    return response()->json(['error' => 'Decryption failed: bad payload or key'], 400);
+                }
+
+                $decrypted = json_decode($decryptedRaw, true);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    return response()->json(['error' => 'Decrypted content is not valid JSON'], 400);
+                }
+
+                // Replace request input with decrypted data
+                $request->replace($decrypted);
             }
-
-            // Decode GCM parts
-            $ciphertext = base64_decode($data['payload']);
-            $iv = base64_decode($data['iv']);
-            $tag = base64_decode($data['tag']);
-
-            // Decrypt raw ciphertext
-            $decryptedRaw = openssl_decrypt($ciphertext, 'aes-256-gcm', $keyBytes, OPENSSL_RAW_DATA, $iv, $tag);
-            if ($decryptedRaw === false) {
-                return response()->json(['error' => 'Decryption failed: bad payload or key'], 400);
-            }
-
-            $decrypted = json_decode($decryptedRaw, true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                return response()->json(['error' => 'Decrypted content is not valid JSON'], 400);
-            }
-
-            // Replace request input with decrypted data
-            $request->replace($decrypted);
         }
 
         // Process request through next middlewares / controllers
