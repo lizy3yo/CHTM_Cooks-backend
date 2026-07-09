@@ -525,16 +525,27 @@ class BorrowRequestController extends Controller
         $obligationsCreated = 0;
         $hasIssues = false;
 
+        $req->load(['student', 'instructor']);
+        $studentName = $req->student ? ($req->student->first_name . ' ' . $req->student->last_name) : 'Unknown';
+        $leaderName = $req->instructor ? ($req->instructor->first_name . ' ' . $req->instructor->last_name) : 'Unknown';
+        $sessionDate = $req->borrow_date ? Carbon::parse($req->borrow_date)->format('Y-m-d') : 'Unknown';
+
         foreach ($request->items as $inspectInput) {
             $borrowItem = BorrowRequestItem::where('borrow_request_id', $req->id)
                 ->where('item_id', $inspectInput['itemId'])
                 ->first();
 
             if ($borrowItem) {
+                $remarks = $inspectInput['notes'] ?? '';
+                $formattedNotes = null;
+                if ($inspectInput['status'] !== 'good') {
+                    $formattedNotes = "Student: {$studentName} | Leader/Instructor: {$leaderName} | Lab Session Date: {$sessionDate} | Remarks: " . ($remarks ?: 'No remarks provided');
+                }
+
                 $borrowItem->inspection_status = $inspectInput['status'];
                 $borrowItem->inspection_date = Carbon::now();
                 $borrowItem->inspected_by = $user->id;
-                $borrowItem->inspection_notes = $inspectInput['notes'] ?? null;
+                $borrowItem->inspection_notes = $formattedNotes ?: ($remarks ?: null);
                 $borrowItem->replacement_quantity = $inspectInput['replacementQuantity'] ?? null;
                 $borrowItem->due_date = isset($inspectInput['dueDate']) ? Carbon::parse($inspectInput['dueDate']) : null;
                 $borrowItem->save();
@@ -564,7 +575,7 @@ class BorrowRequestController extends Controller
                             'amount_paid' => 0,
                             'resolution_type' => 'replacement',
                             'incident_date' => Carbon::now(),
-                            'incident_notes' => $inspectInput['notes'] ?? 'Damaged or missing during return inspection.',
+                            'incident_notes' => $formattedNotes ?: 'Damaged or missing during return inspection.',
                             'due_date' => isset($inspectInput['dueDate']) ? Carbon::parse($inspectInput['dueDate']) : Carbon::now()->addDays(7),
                             'created_by' => $user->id,
                         ]);
