@@ -41,28 +41,62 @@ class AnalyticsReportController extends Controller
         return ['start' => $start, 'end' => $end, 'label' => $label];
     }
 
-    private function getReportData(Carbon $start, Carbon $end, string $period): array
+    private function getReportData(Carbon $start, Carbon $end, string $period, array $filters = []): array
     {
         $now = Carbon::now();
 
-        $requests = BorrowRequest::with(['items', 'student', 'instructor', 'custodian'])
-            ->whereBetween('created_at', [$start, $end])
-            ->get();
+        $query = BorrowRequest::with(['items', 'student', 'instructor', 'custodian'])
+            ->whereBetween('created_at', [$start, $end]);
+
+        if (!empty($filters['class_code_id'])) {
+            $query->where('class_code_id', $filters['class_code_id']);
+        }
+        if (!empty($filters['instructor_id'])) {
+            $query->where('instructor_id', $filters['instructor_id']);
+        }
+        if (!empty($filters['student_id'])) {
+            $query->where('student_id', $filters['student_id']);
+        }
+        if (!empty($filters['custodian_id'])) {
+            $query->where('custodian_id', $filters['custodian_id']);
+        }
+
+        $requests = $query->get();
 
         $borrowRequestsReport = $this->getBorrowRequestsReport($start, $end, $now, $requests);
+
+        $filtersInfo = [];
+        if (!empty($filters['class_code_id'])) {
+            $cc = \App\Models\ClassCode::find($filters['class_code_id']);
+            if ($cc) $filtersInfo[] = "Class: {$cc->course_code} - {$cc->section}";
+        }
+        if (!empty($filters['instructor_id'])) {
+            $inst = \App\Models\User::find($filters['instructor_id']);
+            if ($inst) $filtersInfo[] = "Instructor: {$inst->first_name} {$inst->last_name}";
+        }
+        if (!empty($filters['student_id'])) {
+            $stud = \App\Models\User::find($filters['student_id']);
+            if ($stud) $filtersInfo[] = "Student: {$stud->first_name} {$stud->last_name}";
+        }
+        if (!empty($filters['custodian_id'])) {
+            $cust = \App\Models\User::find($filters['custodian_id']);
+            if ($cust) $filtersInfo[] = "Custodian: {$cust->first_name} {$cust->last_name}";
+        }
+        $filtersLabel = count($filtersInfo) > 0 ? implode(', ', $filtersInfo) : 'None';
 
         return [
             'meta' => [
                 'period' => $period,
                 'from' => $start->toIso8601String(),
                 'to' => $end->toIso8601String(),
-                'generatedAt' => $now->toIso8601String()
+                'generatedAt' => $now->toIso8601String(),
+                'filtersLabel' => $filtersLabel
             ],
             'borrowRequests' => $borrowRequestsReport['data'],
-            'lossAndDamage' => $this->getLossAndDamageReport($start, $end),
-            'inventory' => $this->getInventoryReport($start, $end, $requests, $borrowRequestsReport['itemsBorrowed']),
-            'replacement' => $this->getReplacementReport(),
-            'studentRisk' => $this->getStudentRiskReport($start, $end, $now)
+            'lossAndDamage' => $this->getLossAndDamageReport($start, $end, $filters),
+            'inventory' => $this->getInventoryReport($start, $end, $requests, $borrowRequestsReport['itemsBorrowed'], $filters),
+            'replacement' => $this->getReplacementReport($filters),
+            'studentRisk' => $this->getStudentRiskReport($start, $end, $now, $filters)
         ];
     }
 
@@ -249,11 +283,31 @@ class AnalyticsReportController extends Controller
         ];
     }
 
-    private function getLossAndDamageReport(Carbon $start, Carbon $end): array
+    private function getLossAndDamageReport(Carbon $start, Carbon $end, array $filters = []): array
     {
-        $obligations = ReplacementObligation::with(['student', 'borrowRequest'])
-            ->whereBetween('incident_date', [$start, $end])
-            ->get();
+        $query = ReplacementObligation::with(['student', 'borrowRequest'])
+            ->whereBetween('incident_date', [$start, $end]);
+
+        if (!empty($filters['student_id'])) {
+            $query->where('student_id', $filters['student_id']);
+        }
+        if (!empty($filters['class_code_id'])) {
+            $query->whereHas('borrowRequest', function($q) use ($filters) {
+                $q->where('class_code_id', $filters['class_code_id']);
+            });
+        }
+        if (!empty($filters['instructor_id'])) {
+            $query->whereHas('borrowRequest', function($q) use ($filters) {
+                $q->where('instructor_id', $filters['instructor_id']);
+            });
+        }
+        if (!empty($filters['custodian_id'])) {
+            $query->whereHas('borrowRequest', function($q) use ($filters) {
+                $q->where('custodian_id', $filters['custodian_id']);
+            });
+        }
+
+        $obligations = $query->get();
 
         $todayStart = Carbon::today();
         $last7DaysStart = Carbon::now()->subDays(7)->startOfDay();
@@ -302,7 +356,7 @@ class AnalyticsReportController extends Controller
         ];
     }
 
-    private function getInventoryReport(Carbon $start, Carbon $end, \Illuminate\Database\Eloquent\Collection $requests, array $itemsBorrowed): array
+    private function getInventoryReport(Carbon $start, Carbon $end, \Illuminate\Database\Eloquent\Collection $requests, array $itemsBorrowed, array $filters = []): array
     {
         $currentItems = InventoryItem::where('archived', false)->get();
         $adjustments = Donation::where('donor_name', 'Custodian Stock Adjustment')
@@ -313,8 +367,8 @@ class AnalyticsReportController extends Controller
             'summary' => $this->buildInventorySummary($start, $end, $currentItems, $adjustments),
             'requiredItems' => $this->buildRequiredItems($currentItems),
             'mostBorrowedItems' => array_slice($itemsBorrowed, 0, 10),
-            'itemsCurrentlyOut' => $this->buildItemsCurrentlyOut(),
-            'damageRateItems' => $this->buildDamageRateItems($start, $end),
+            'itemsCurrentlyOut' => $this->buildItemsCurrentlyOut($filters),
+            'damageRateItems' => $this->buildDamageRateItems($start, $end, $filters),
             'eomVariance' => $this->buildEomVariance($currentItems),
             'varianceDrivers' => $this->buildVarianceDrivers($requests),
             'stockAlerts' => [],
@@ -363,10 +417,15 @@ class AnalyticsReportController extends Controller
         })->values()->toArray();
     }
 
-    private function buildItemsCurrentlyOut(): array
+    private function buildItemsCurrentlyOut(array $filters = []): array
     {
         $outItemsMap = [];
-        $activeBorrowings = BorrowRequest::with('items')->where('status', 'borrowed')->get();
+        $query = BorrowRequest::with('items')->where('status', 'borrowed');
+        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
+        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+        $activeBorrowings = $query->get();
         foreach ($activeBorrowings as $b) {
             foreach ($b->items as $item) {
                 $itemId = $item->item_id;
@@ -393,13 +452,17 @@ class AnalyticsReportController extends Controller
         return array_slice($itemsCurrentlyOut, 0, 20);
     }
 
-    private function buildDamageRateItems(Carbon $start, Carbon $end): array
+    private function buildDamageRateItems(Carbon $start, Carbon $end, array $filters = []): array
     {
         $inspectedItemsMap = [];
-        $completedRequests = BorrowRequest::with('items')
+        $query = BorrowRequest::with('items')
             ->whereBetween('created_at', [$start, $end])
-            ->whereIn('status', ['returned', 'missing', 'resolved'])
-            ->get();
+            ->whereIn('status', ['returned', 'missing', 'resolved']);
+        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
+        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+        $completedRequests = $query->get();
         foreach ($completedRequests as $r) {
             foreach ($r->items as $item) {
                 if (!$item->inspection_status) continue;
@@ -492,9 +555,28 @@ class AnalyticsReportController extends Controller
         })->values()->toArray();
     }
 
-    private function getReplacementReport(): array
+    private function getReplacementReport(array $filters = []): array
     {
-        $allObligations = ReplacementObligation::get();
+        $query = ReplacementObligation::query();
+        if (!empty($filters['student_id'])) {
+            $query->where('student_id', $filters['student_id']);
+        }
+        if (!empty($filters['class_code_id'])) {
+            $query->whereHas('borrowRequest', function($q) use ($filters) {
+                $q->where('class_code_id', $filters['class_code_id']);
+            });
+        }
+        if (!empty($filters['instructor_id'])) {
+            $query->whereHas('borrowRequest', function($q) use ($filters) {
+                $q->where('instructor_id', $filters['instructor_id']);
+            });
+        }
+        if (!empty($filters['custodian_id'])) {
+            $query->whereHas('borrowRequest', function($q) use ($filters) {
+                $q->where('custodian_id', $filters['custodian_id']);
+            });
+        }
+        $allObligations = $query->get();
         $totalItemsPending = $allObligations->where('status', 'pending')->sum(fn($o) => $o->amount - $o->amount_paid);
         $totalItemsReplaced = $allObligations->where('status', 'replaced')->sum('amount_paid');
 
@@ -543,9 +625,14 @@ class AnalyticsReportController extends Controller
         // Monthly replacement activity (last 6 months)
         $sixMonthsAgo = Carbon::now()->subMonths(6)->startOfMonth();
         $monthlyActivity = [];
-        $resolvedIn6Months = ReplacementObligation::where('status', 'replaced')
-            ->where('resolution_date', '>=', $sixMonthsAgo)
-            ->get()
+        $resolvedIn6MonthsQuery = ReplacementObligation::where('status', 'replaced')
+            ->where('resolution_date', '>=', $sixMonthsAgo);
+        if (!empty($filters['student_id'])) $resolvedIn6MonthsQuery->where('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->where('class_code_id', $filters['class_code_id']));
+        if (!empty($filters['instructor_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->where('instructor_id', $filters['instructor_id']));
+        if (!empty($filters['custodian_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->where('custodian_id', $filters['custodian_id']));
+        
+        $resolvedIn6Months = $resolvedIn6MonthsQuery->get()
             ->groupBy(fn($o) => $o->resolution_date->format('Y-m'));
 
         for ($i = 5; $i >= 0; $i--) {
@@ -590,21 +677,26 @@ class AnalyticsReportController extends Controller
         ];
     }
 
-    private function getStudentRiskReport(Carbon $start, Carbon $end, Carbon $now): array
+    private function getStudentRiskReport(Carbon $start, Carbon $end, Carbon $now, array $filters = []): array
     {
         return [
-            'repeatOffenders' => $this->buildRepeatOffenders(),
-            'highIncidentStudents' => $this->buildHighIncidentStudents($start, $end),
-            'overdueStudents' => $this->buildOverdueStudents($now),
-            'trustScores' => $this->buildTrustScores($start, $end)
+            'repeatOffenders' => $this->buildRepeatOffenders($filters),
+            'highIncidentStudents' => $this->buildHighIncidentStudents($start, $end, $filters),
+            'overdueStudents' => $this->buildOverdueStudents($now, $filters),
+            'trustScores' => $this->buildTrustScores($start, $end, $filters)
         ];
     }
 
-    private function buildRepeatOffenders(): array
+    private function buildRepeatOffenders(array $filters = []): array
     {
-        return ReplacementObligation::where('status', 'pending')
-            ->with('student')
-            ->get()
+        $query = ReplacementObligation::where('status', 'pending')
+            ->with('student');
+        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('class_code_id', $filters['class_code_id']));
+        if (!empty($filters['instructor_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('instructor_id', $filters['instructor_id']));
+        if (!empty($filters['custodian_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('custodian_id', $filters['custodian_id']));
+        
+        return $query->get()
             ->groupBy('student_id')
             ->map(function ($group) {
                 $student = $group->first()->student;
@@ -619,11 +711,16 @@ class AnalyticsReportController extends Controller
             })->sortByDesc('activeObligations')->slice(0, 10)->values()->toArray();
     }
 
-    private function buildHighIncidentStudents(Carbon $start, Carbon $end): array
+    private function buildHighIncidentStudents(Carbon $start, Carbon $end, array $filters = []): array
     {
-        return ReplacementObligation::whereBetween('incident_date', [$start, $end])
-            ->with('student')
-            ->get()
+        $query = ReplacementObligation::whereBetween('incident_date', [$start, $end])
+            ->with('student');
+        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('class_code_id', $filters['class_code_id']));
+        if (!empty($filters['instructor_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('instructor_id', $filters['instructor_id']));
+        if (!empty($filters['custodian_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('custodian_id', $filters['custodian_id']));
+        
+        return $query->get()
             ->groupBy('student_id')
             ->map(function ($group) {
                 $student = $group->first()->student;
@@ -639,12 +736,17 @@ class AnalyticsReportController extends Controller
             })->sortByDesc('incidents')->slice(0, 10)->values()->toArray();
     }
 
-    private function buildOverdueStudents(Carbon $now): array
+    private function buildOverdueStudents(Carbon $now, array $filters = []): array
     {
-        return BorrowRequest::where('status', 'borrowed')
+        $query = BorrowRequest::where('status', 'borrowed')
             ->where('return_date', '<', $now)
-            ->with('student')
-            ->get()
+            ->with('student');
+        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+        
+        return $query->get()
             ->groupBy('student_id')
             ->map(function ($group) use ($now) {
                 $student = $group->first()->student;
@@ -661,11 +763,16 @@ class AnalyticsReportController extends Controller
             })->sortByDesc('daysOverdue')->slice(0, 10)->values()->toArray();
     }
 
-    private function buildTrustScores(Carbon $start, Carbon $end): array
+    private function buildTrustScores(Carbon $start, Carbon $end, array $filters = []): array
     {
-        $activeStudentIds = BorrowRequest::whereBetween('created_at', [$start, $end])
-            ->whereNotNull('student_id')
-            ->groupBy('student_id')
+        $query = BorrowRequest::whereBetween('created_at', [$start, $end])
+            ->whereNotNull('student_id');
+        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+
+        $activeStudentIds = $query->groupBy('student_id')
             ->orderByRaw('MAX(created_at) DESC')
             ->limit(50)
             ->pluck('student_id');
@@ -710,13 +817,20 @@ class AnalyticsReportController extends Controller
         $from = $request->query('from');
         $to = $request->query('to');
 
+        $filters = [
+            'class_code_id' => $request->query('class_code_id'),
+            'instructor_id' => $request->query('instructor_id'),
+            'student_id' => $request->query('student_id'),
+            'custodian_id' => $request->query('custodian_id'),
+        ];
+
         if (!in_array($period, ['week', 'month', 'semester'])) {
             return response()->json(['error' => 'Invalid period. Use week, month, or semester.'], 400);
         }
 
         try {
             $range = $this->getPeriodRange($period, $from, $to);
-            $report = $this->getReportData($range['start'], $range['end'], $period);
+            $report = $this->getReportData($range['start'], $range['end'], $period, $filters);
             return response()->json($report);
         } catch (\Exception $e) {
             Log::error('Failed to generate analytics report: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
@@ -738,9 +852,16 @@ class AnalyticsReportController extends Controller
         $from = $request->query('from');
         $to = $request->query('to');
 
+        $filters = [
+            'class_code_id' => $request->query('class_code_id'),
+            'instructor_id' => $request->query('instructor_id'),
+            'student_id' => $request->query('student_id'),
+            'custodian_id' => $request->query('custodian_id'),
+        ];
+
         try {
             $range = $this->getPeriodRange($period, $from, $to);
-            $report = $this->getReportData($range['start'], $range['end'], $period);
+            $report = $this->getReportData($range['start'], $range['end'], $period, $filters);
 
             $summary = [
                 'meta' => $report['meta'],
@@ -814,9 +935,16 @@ class AnalyticsReportController extends Controller
         $from = $request->query('from');
         $to = $request->query('to');
 
+        $filters = [
+            'class_code_id' => $request->query('class_code_id'),
+            'instructor_id' => $request->query('instructor_id'),
+            'student_id' => $request->query('student_id'),
+            'custodian_id' => $request->query('custodian_id'),
+        ];
+
         try {
             $range = $this->getPeriodRange($period, $from, $to);
-            $report = $this->getReportData($range['start'], $range['end'], $period);
+            $report = $this->getReportData($range['start'], $range['end'], $period, $filters);
 
             // Build XML payload
             $xml = $this->generateSpreadsheetML($report, $range['label'], $user);
@@ -970,8 +1098,9 @@ XML;
 XML;
 
         // Metadata Header Table (Common to all tabs)
-        $metaHeaderRows = function($titleName) use ($rangeLabel, $author) {
+        $metaHeaderRows = function($titleName) use ($rangeLabel, $author, $report) {
             $exportDate = date('F j, Y');
+            $filtersLabel = htmlspecialchars($report['meta']['filtersLabel'] ?? 'None');
             return <<<XML
       <Row ss:Height="6"/>
       <Row ss:Height="38">
@@ -982,6 +1111,10 @@ XML;
       <Row ss:Height="22">
         <Cell ss:Index="7" ss:StyleID="MetadataLabel"><Data ss:Type="String">Date Range</Data></Cell>
         <Cell ss:StyleID="MetadataValue"><Data ss:Type="String">{$rangeLabel}</Data></Cell>
+      </Row>
+      <Row ss:Height="22">
+        <Cell ss:Index="7" ss:StyleID="MetadataLabel"><Data ss:Type="String">Filters Applied</Data></Cell>
+        <Cell ss:StyleID="MetadataValue"><Data ss:Type="String">{$filtersLabel}</Data></Cell>
       </Row>
       <Row ss:Height="22">
         <Cell ss:Index="7" ss:StyleID="MetadataLabel"><Data ss:Type="String">Counted by:</Data></Cell>
