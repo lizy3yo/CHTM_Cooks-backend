@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class InventoryHistory extends Model
+class InventoryActivityLog extends Model
 {
     protected $table = 'inventory_history';
 

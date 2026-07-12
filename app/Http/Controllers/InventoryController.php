@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\InventoryCategory;
 use App\Models\InventoryItem;
-use App\Models\InventoryHistory;
+use App\Models\InventoryActivityLog;
 use App\Models\DeletedInventoryItem;
 use App\Models\DeletedInventoryCategory;
 use Illuminate\Support\Facades\Validator;
@@ -28,7 +28,7 @@ class InventoryController extends Controller
             return;
         }
 
-        InventoryHistory::create([
+        InventoryActivityLog::create([
             'action' => $action,
             'entity_type' => $entityType,
             'entity_id' => $entityId,
@@ -1015,9 +1015,9 @@ class InventoryController extends Controller
     // AUDIT LOGS
     // ==========================================
 
-    public function getHistory(Request $request)
+    public function getActivityLogs(Request $request)
     {
-        $query = InventoryHistory::query();
+        $query = InventoryActivityLog::query();
 
         if ($request->filled('action')) {
             $query->where('action', $request->action);
@@ -1048,13 +1048,13 @@ class InventoryController extends Controller
         $page = $request->integer('page', 1);
         $pages = max(1, ceil($total / $limit));
 
-        $history = $query->orderBy('timestamp', 'desc')
-                         ->skip(($page - 1) * $limit)
-                         ->take($limit)
-                         ->get();
+        $logs = $query->orderBy('timestamp', 'desc')
+                      ->skip(($page - 1) * $limit)
+                      ->take($limit)
+                      ->get();
 
         return response()->json([
-            'history' => $history->map(fn($h) => [
+            'activityLogs' => $logs->map(fn($h) => [
                 'id' => (string) $h->id,
                 'action' => $h->action,
                 'entityType' => $h->entity_type,

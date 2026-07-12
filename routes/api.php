@@ -190,7 +190,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::post('/inventory/upload', [InventoryController::class, 'uploadImage']);
 
     // History logs
-    Route::get('/inventory/history', [InventoryController::class, 'getHistory']);
+    Route::get('/inventory/activity-logs', [InventoryController::class, 'getActivityLogs']);
 
     // Stream
     Route::get('/inventory/stream', [InventoryController::class, 'stream']);
