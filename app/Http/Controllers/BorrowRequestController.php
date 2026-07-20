@@ -20,7 +20,8 @@ class BorrowRequestController extends Controller
 {
     private function transformUserSummary($user)
     {
-        if (!$user) return null;
+        if (!$user)
+            return null;
         return [
             'id' => (string) $user->id,
             'email' => $user->email,
@@ -124,7 +125,7 @@ class BorrowRequestController extends Controller
             $classCodeIds = DB::table('class_code_instructor')->where('user_id', $user->id)->pluck('class_code_id');
             $query->where(function ($q) use ($user, $classCodeIds) {
                 $q->where('instructor_id', $user->id)
-                  ->orWhereIn('class_code_id', $classCodeIds);
+                    ->orWhereIn('class_code_id', $classCodeIds);
             });
         }
 
@@ -141,11 +142,11 @@ class BorrowRequestController extends Controller
             $search = '%' . $request->search . '%';
             $query->where(function ($q) use ($search) {
                 $q->where('purpose', 'like', $search)
-                  ->orWhereHas('student', function ($sq) use ($search) {
-                      $sq->where('first_name', 'like', $search)
-                        ->orWhere('last_name', 'like', $search)
-                        ->orWhere('email', 'like', $search);
-                  });
+                    ->orWhereHas('student', function ($sq) use ($search) {
+                        $sq->where('first_name', 'like', $search)
+                            ->orWhere('last_name', 'like', $search)
+                            ->orWhere('email', 'like', $search);
+                    });
             });
         }
 
@@ -156,9 +157,9 @@ class BorrowRequestController extends Controller
 
         $sortBy = $request->input('sortBy', 'createdAt') === 'returnDate' ? 'return_date' : 'created_at';
         $requests = $query->orderBy($sortBy, 'desc')
-                          ->skip(($page - 1) * $limit)
-                          ->take($limit)
-                          ->get();
+            ->skip(($page - 1) * $limit)
+            ->take($limit)
+            ->get();
 
         return response()->json([
             'requests' => $requests->map(fn($r) => $this->transformBorrowRequest($r)),
@@ -234,7 +235,7 @@ class BorrowRequestController extends Controller
         // Create borrow request items
         foreach ($request->items as $itemInput) {
             $invItem = InventoryItem::find($itemInput['itemId']);
-            
+
             // Check stock availability
             $available = $invItem->quantity + $invItem->donations;
             if ($available < $itemInput['quantity'] && !$invItem->is_required) {
@@ -266,7 +267,7 @@ class BorrowRequestController extends Controller
         }
 
         $user = auth()->user();
-        
+
         $req->status = 'approved_instructor';
         $req->approved_at = Carbon::now();
         $req->updated_by = $user->id;
@@ -393,7 +394,7 @@ class BorrowRequestController extends Controller
             if ($invItem) {
                 // Deduct from quantity first, then donations
                 $qtyToDeduct = $borrowItem->quantity;
-                
+
                 if ($invItem->quantity >= $qtyToDeduct) {
                     $invItem->decrement('quantity', $qtyToDeduct);
                 } else {
