@@ -35,7 +35,7 @@ class BorrowRequestController extends Controller
     }
 
     /**
-     * @param \App\Models\BorrowRequest|\stdClass $req
+     * @param BorrowRequest|\stdClass $req
      * @return array
      */
     private function transformBorrowRequest($req)

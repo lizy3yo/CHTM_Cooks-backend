@@ -103,6 +103,7 @@ class DonationAndObligationController extends Controller
             'categoryId' => 'nullable|integer',
             'specification' => 'nullable|string',
             'toolsOrEquipment' => 'nullable|string',
+            'picture' => 'nullable|string',
             
             // Required if add_to_existing
             'inventoryItemId' => 'required_if:inventoryAction,add_to_existing|integer|exists:inventory_items,id'
@@ -131,7 +132,7 @@ class DonationAndObligationController extends Controller
                 'category_id' => $request->categoryId,
                 'specification' => $request->specification,
                 'tools_or_equipment' => $request->toolsOrEquipment ?? '',
-                'picture' => null,
+                'picture' => $request->picture ?? null,
                 'quantity' => 0,
                 'donations' => $request->quantity,
                 'eom_count' => $request->quantity,
