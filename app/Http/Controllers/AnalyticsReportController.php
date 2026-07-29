@@ -9,6 +9,7 @@ use App\Models\BorrowRequestItem;
 use App\Models\ReplacementObligation;
 use App\Models\Donation;
 use App\Models\InventoryItem;
+use App\Models\InventoryActivityLog;
 use App\Models\WalkInTransaction;
 use App\Services\StudentStatisticsService;
 use Carbon\Carbon;
@@ -445,9 +446,7 @@ class AnalyticsReportController extends Controller
     private function getInventoryReport(Carbon $start, Carbon $end, \Illuminate\Database\Eloquent\Collection $requests, array $itemsBorrowed, array $filters = []): array
     {
         $currentItems = InventoryItem::where('archived', false)->get();
-        $adjustments = Donation::where('donor_name', 'Custodian Stock Adjustment')
-            ->whereBetween('created_at', [$start, $end])
-            ->get();
+        $adjustments = $this->getStockAdjustments($start, $end);
 
         return [
             'summary' => $this->buildInventorySummary($start, $end, $currentItems, $adjustments),
@@ -458,11 +457,82 @@ class AnalyticsReportController extends Controller
             'eomVariance' => $this->buildEomVariance($currentItems),
             'varianceDrivers' => $this->buildVarianceDrivers($requests),
             'stockAlerts' => [],
-            'stockAdjustments' => $this->buildStockAdjustments($adjustments)
+            'stockAdjustments' => $this->buildStockAdjustments($adjustments),
+            'donationRecords' => $this->buildDonationRecords($start, $end)
         ];
     }
 
-    private function buildInventorySummary(Carbon $start, Carbon $end, \Illuminate\Database\Eloquent\Collection $currentItems, \Illuminate\Database\Eloquent\Collection $adjustments): array
+    /**
+     * Item donations received in the period, one row per donor contribution.
+     * Excludes the sentinel donor used for stock adjustments — those are real
+     * inventory corrections, not gifts, and are reported separately.
+     */
+    private function buildDonationRecords(Carbon $start, Carbon $end): array
+    {
+        return Donation::where('donor_name', '!=', 'Custodian Stock Adjustment')
+            ->whereBetween('created_at', [$start, $end])
+            ->orderBy('created_at', 'desc')
+            ->limit(300)
+            ->get()
+            ->map(fn($d) => [
+                'id' => (string) $d->id,
+                'receiptNumber' => $d->receipt_number,
+                'donorName' => $d->donor_name,
+                'itemName' => $d->item_name,
+                'quantity' => (int) $d->quantity,
+                'unit' => $d->unit,
+                'purpose' => $d->purpose,
+                'notes' => $d->notes,
+                'inventoryAction' => $d->inventory_action,
+                'date' => $d->date ? $d->date->toIso8601String() : null,
+                'createdAt' => $d->created_at->toIso8601String(),
+            ])
+            ->values()
+            ->toArray();
+    }
+
+    /**
+     * Manual stock adjustments (Restock / Loss-Damage) recorded by custodians via the
+     * Adjust Stock action. These are stored in the inventory activity log with a
+     * `metadata.adjustment` block and a quantity change — NOT as Donation rows.
+     * Borrow-driven stock movements (walk-in / confidential) are excluded so the
+     * Restocked / Loss-Damage totals reflect deliberate adjustments only.
+     */
+    private function getStockAdjustments(Carbon $start, Carbon $end): \Illuminate\Support\Collection
+    {
+        return InventoryActivityLog::whereBetween('timestamp', [$start, $end])
+            ->orderBy('timestamp', 'desc')
+            ->get()
+            ->filter(function ($log) {
+                $meta = $log->metadata ?? [];
+                if (!isset($meta['adjustment'])) return false;
+                $reason = trim((string) ($meta['adjustment']['reason'] ?? ''));
+                return !preg_match('/^(walk-in|confidential)/i', $reason);
+            })
+            ->map(function ($log) {
+                $adj = $log->metadata['adjustment'] ?? [];
+                $delta = 0;
+                foreach (($log->changes ?? []) as $c) {
+                    if (in_array($c['field'] ?? '', ['quantity', 'donations'], true)) {
+                        $delta += (int) ($c['newValue'] ?? 0) - (int) ($c['oldValue'] ?? 0);
+                    }
+                }
+                // Fall back to the declared type if no numeric delta was captured.
+                if ($delta === 0 && ($adj['type'] ?? '') === 'subtract') $delta = 0;
+                return (object) [
+                    'id' => $log->id,
+                    'item_name' => $log->entity_name,
+                    'quantity' => $delta,
+                    'purpose' => trim((string) ($adj['reason'] ?? '')),
+                    'notes' => '',
+                    'created_at' => $log->timestamp,
+                    'date' => $log->timestamp,
+                ];
+            })
+            ->values();
+    }
+
+    private function buildInventorySummary(Carbon $start, Carbon $end, \Illuminate\Database\Eloquent\Collection $currentItems, \Illuminate\Support\Collection $adjustments): array
     {
         $totalStockQty = $currentItems->sum('quantity');
         $totalEomQty = $currentItems->sum('eom_count');
@@ -626,7 +696,7 @@ class AnalyticsReportController extends Controller
         return array_slice($varianceDrivers, 0, 20);
     }
 
-    private function buildStockAdjustments(\Illuminate\Database\Eloquent\Collection $adjustments): array
+    private function buildStockAdjustments(\Illuminate\Support\Collection $adjustments): array
     {
         return $adjustments->sortByDesc('created_at')->map(function ($a) {
             return [
@@ -959,7 +1029,7 @@ class AnalyticsReportController extends Controller
                     'overdueCount' => $report['borrowRequests']['overdueCount']
                 ],
                 'lossAndDamage' => ['summary' => $report['lossAndDamage']['summary'], 'tracking' => []],
-                'inventory' => ['summary' => $report['inventory']['summary'], 'requiredItems' => [], 'mostBorrowedItems' => [], 'itemsCurrentlyOut' => [], 'damageRateItems' => [], 'eomVariance' => [], 'varianceDrivers' => [], 'stockAlerts' => [], 'stockAdjustments' => []],
+                'inventory' => ['summary' => $report['inventory']['summary'], 'requiredItems' => [], 'mostBorrowedItems' => [], 'itemsCurrentlyOut' => [], 'damageRateItems' => [], 'eomVariance' => [], 'varianceDrivers' => [], 'stockAlerts' => [], 'stockAdjustments' => [], 'donationRecords' => []],
                 'replacement' => ['summary' => $report['replacement']['summary'], 'resolutionBreakdown' => [], 'avgResolutionDays' => 0, 'obligationsByCategory' => [], 'monthlyActivity' => [], 'donationTotals' => []],
                 'studentRisk' => ['repeatOffenders' => [], 'highIncidentStudents' => [], 'overdueStudents' => [], 'trustScores' => []],
                 'walkIns' => ['summary' => $report['walkIns']['summary'], 'transactions' => array_slice($report['walkIns']['transactions'], 0, 10)]
@@ -989,12 +1059,21 @@ class AnalyticsReportController extends Controller
 
             $hasMultipleWorkers = function_exists('pcntl_fork') && getenv('PHP_CLI_SERVER_WORKERS') && intval(getenv('PHP_CLI_SERVER_WORKERS')) > 1;
             if (php_sapi_name() !== 'cli-server' || $hasMultipleWorkers) {
-                // Simple keep alive loop
+                // Poll a cheap change signature; push an event the moment data changes.
+                $signature = $this->changeSignature();
                 $start = time();
                 while (time() - $start < 30) {
-                    echo ": keepalive\n\n";
+                    sleep(4);
+                    if (connection_aborted()) break;
+                    $current = $this->changeSignature();
+                    if ($current !== $signature) {
+                        $signature = $current;
+                        echo "event: analytics_change\n";
+                        echo "data: {}\n\n";
+                    } else {
+                        echo ": keepalive\n\n";
+                    }
                     flush();
-                    sleep(10);
                 }
             }
         }, 200, [
@@ -1003,6 +1082,40 @@ class AnalyticsReportController extends Controller
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);
+    }
+
+    /**
+     * A cheap fingerprint of everything the analytics report depends on. When it
+     * changes, clients know to refetch — used by both the SSE stream and the
+     * lightweight polling fallback (which works on single-worker dev servers).
+     */
+    private function changeSignature(): string
+    {
+        $parts = [
+            (string) BorrowRequest::max('updated_at'),
+            (string) BorrowRequest::count(),
+            (string) InventoryItem::max('updated_at'),
+            (string) InventoryItem::count(),
+            (string) InventoryActivityLog::max('timestamp'),
+            (string) InventoryActivityLog::count(),
+            (string) WalkInTransaction::max('updated_at'),
+            (string) WalkInTransaction::count(),
+            (string) ReplacementObligation::max('updated_at'),
+            (string) ReplacementObligation::count(),
+        ];
+        return md5(implode('|', $parts));
+    }
+
+    /**
+     * GET /api/reports/analytics/signature — cheap change fingerprint for polling.
+     */
+    public function signature()
+    {
+        $user = auth()->user();
+        if (!$user || !in_array($user->role, ['instructor', 'custodian', 'superadmin', 'admin'])) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+        return response()->json(['signature' => $this->changeSignature()]);
     }
 
     /**

@@ -278,6 +278,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/reports/analytics', [AnalyticsReportController::class, 'getReport']);
     Route::get('/reports/analytics/summary', [AnalyticsReportController::class, 'getSummary']);
     Route::get('/reports/analytics/stream', [AnalyticsReportController::class, 'stream']);
+    Route::get('/reports/analytics/signature', [AnalyticsReportController::class, 'signature']);
     Route::get('/reports/analytics/export', [AnalyticsReportController::class, 'export']);
 
     // Users
