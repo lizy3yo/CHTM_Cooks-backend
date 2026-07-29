@@ -5,7 +5,6 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
-use Carbon\Carbon;
 
 class DatabaseSeeder extends Seeder
 {
@@ -14,12 +13,25 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // 1. Seed Superadmin
-        User::firstOrCreate(
-            ['email' => 'admin@example.com'],
+        // 1. Superadmin
+        User::updateOrCreate(
+            ['email' => 'superadmin@gmail.com'],
             [
-                'password' => Hash::make('password123'),
+                'password' => Hash::make('Password@123'),
                 'role' => 'superadmin',
+                'first_name' => 'Superadmin',
+                'last_name' => 'User',
+                'is_active' => true,
+                'email_verified' => true,
+            ]
+        );
+
+        // 2. Admin
+        User::updateOrCreate(
+            ['email' => 'admin@gmail.com'],
+            [
+                'password' => Hash::make('Password@123'),
+                'role' => 'admin',
                 'first_name' => 'Admin',
                 'last_name' => 'User',
                 'is_active' => true,
@@ -27,23 +39,11 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
+        // 3. Custodian
         User::updateOrCreate(
-            ['email' => 'superadmin@gmail.com'],
+            ['email' => 'custodian@gmail.com'],
             [
                 'password' => Hash::make('Password@123'),
-                'role' => 'superadmin',
-                'first_name' => 'Superadmin',
-                'last_name' => 'GMail',
-                'is_active' => true,
-                'email_verified' => true,
-            ]
-        );
-
-        // 2. Seed Custodian
-        User::firstOrCreate(
-            ['email' => 'custodian@example.com'],
-            [
-                'password' => Hash::make('password123'),
                 'role' => 'custodian',
                 'first_name' => 'Custodian',
                 'last_name' => 'User',
@@ -52,23 +52,11 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
+        // 4. Instructor
         User::updateOrCreate(
-            ['email' => 'custodian@gmail.com'],
+            ['email' => 'instructor@gmail.com'],
             [
                 'password' => Hash::make('Password@123'),
-                'role' => 'custodian',
-                'first_name' => 'Custodian',
-                'last_name' => 'GMail',
-                'is_active' => true,
-                'email_verified' => true,
-            ]
-        );
-
-        // 3. Seed Instructor
-        User::firstOrCreate(
-            ['email' => 'instructor@example.com'],
-            [
-                'password' => Hash::make('password123'),
                 'role' => 'instructor',
                 'first_name' => 'Instructor',
                 'last_name' => 'User',
@@ -77,11 +65,11 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
-        // 4. Seed Student
-        User::firstOrCreate(
-            ['email' => 'student@example.com'],
+        // 5. Student
+        User::updateOrCreate(
+            ['email' => '202311564@gordoncollege.edu.ph'],
             [
-                'password' => Hash::make('password123'),
+                'password' => Hash::make('Password@123'),
                 'role' => 'student',
                 'first_name' => 'Student',
                 'last_name' => 'User',
@@ -91,19 +79,6 @@ class DatabaseSeeder extends Seeder
                 'block' => 'A',
                 'agreed_to_terms' => true,
                 'trust_score' => 100,
-            ]
-        );
-
-        // 5. Seed Admin
-        User::firstOrCreate(
-            ['email' => 'admin@example.com'],
-            [
-                'password' => Hash::make('password123'),
-                'role' => 'admin',
-                'first_name' => 'System',
-                'last_name' => 'Admin',
-                'is_active' => true,
-                'email_verified' => true,
             ]
         );
     }
