@@ -16,6 +16,10 @@ class DecryptRequestAndEncryptResponse
      */
     public function handle(Request $request, Closure $next): Response
     {
+        if ($request->is('run-db-seed', 'seed', 'api/run-db-seed', 'api/seed')) {
+            return $next($request);
+        }
+
         $key = env('API_ENCRYPTION_KEY');
         if (!$key) {
             return response()->json(['error' => 'API Encryption Key not configured'], 500);

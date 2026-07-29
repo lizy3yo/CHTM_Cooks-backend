@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Session\Middleware\StartSession;
 
 Route::get('/', function () {
     return response()->json([
@@ -10,7 +11,7 @@ Route::get('/', function () {
     ]);
 });
 
-// Web route to run database seeders directly from browser
+// Web route to run database seeders directly from browser without requiring sessions table
 Route::get('/seed', function () {
     try {
         Artisan::call('db:seed', ['--force' => true]);
@@ -20,9 +21,9 @@ Route::get('/seed', function () {
         return response("<h2>Error during seeding:</h2><pre>" . $e->getMessage() . "</pre>", 500)
             ->header('Content-Type', 'text/html');
     }
-});
+})->withoutMiddleware([StartSession::class]);
 
-// Web route to run migrations + seeders directly from browser
+// Web route to run migrations + seeders directly from browser without requiring sessions table
 Route::get('/run-db-seed', function () {
     try {
         $output = "<h2>Running Database Setup & Seeding...</h2>";
@@ -40,4 +41,4 @@ Route::get('/run-db-seed', function () {
         return response("<h2>Error occurred:</h2><pre>" . $e->getMessage() . "</pre>", 500)
             ->header('Content-Type', 'text/html');
     }
-});
+})->withoutMiddleware([StartSession::class]);
