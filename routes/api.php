@@ -13,6 +13,7 @@ use App\Http\Controllers\StudentStatisticsController;
 use App\Http\Controllers\AnalyticsReportController;
 use App\Http\Controllers\AiChatController;
 use App\Http\Controllers\CartController;
+use App\Http\Controllers\WalkInTransactionController;
 
 use Illuminate\Support\Facades\Artisan;
 
@@ -267,6 +268,11 @@ Route::middleware('jwt.auth')->group(function () {
     // Student Statistics
     Route::get('/student-statistics', [StudentStatisticsController::class, 'getStats']);
     Route::get('/dashboard/stats', [StudentStatisticsController::class, 'getDashboardStats']);
+
+    // Walk-in (Alternative) Transactions
+    Route::get('/walk-in-transactions', [WalkInTransactionController::class, 'index']);
+    Route::post('/walk-in-transactions', [WalkInTransactionController::class, 'store']);
+    Route::post('/walk-in-transactions/{reference}/return', [WalkInTransactionController::class, 'markReturned']);
 
     // Analytics Reports
     Route::get('/reports/analytics', [AnalyticsReportController::class, 'getReport']);

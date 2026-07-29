@@ -9,6 +9,7 @@ use App\Models\BorrowRequestItem;
 use App\Models\ReplacementObligation;
 use App\Models\Donation;
 use App\Models\InventoryItem;
+use App\Models\WalkInTransaction;
 use App\Services\StudentStatisticsService;
 use Carbon\Carbon;
 use DB;
@@ -45,20 +46,32 @@ class AnalyticsReportController extends Controller
     {
         $now = Carbon::now();
 
+        // Normalize every filter to either null or a non-empty list, so a single
+        // selection and a multi-selection are handled uniformly (via whereIn).
+        $normalizeFilter = function ($v) {
+            if ($v === null || $v === '') return null;
+            $arr = is_array($v) ? $v : [$v];
+            $arr = array_values(array_filter($arr, fn($x) => $x !== null && $x !== ''));
+            return count($arr) ? $arr : null;
+        };
+        foreach (['class_code_id', 'instructor_id', 'student_id', 'custodian_id', 'walk_in_person'] as $fk) {
+            $filters[$fk] = $normalizeFilter($filters[$fk] ?? null);
+        }
+
         $query = BorrowRequest::with(['items', 'student', 'instructor', 'custodian'])
             ->whereBetween('created_at', [$start, $end]);
 
         if (!empty($filters['class_code_id'])) {
-            $query->where('class_code_id', $filters['class_code_id']);
+            $query->whereIn('class_code_id', $filters['class_code_id']);
         }
         if (!empty($filters['instructor_id'])) {
-            $query->where('instructor_id', $filters['instructor_id']);
+            $query->whereIn('instructor_id', $filters['instructor_id']);
         }
         if (!empty($filters['student_id'])) {
-            $query->where('student_id', $filters['student_id']);
+            $query->whereIn('student_id', $filters['student_id']);
         }
         if (!empty($filters['custodian_id'])) {
-            $query->where('custodian_id', $filters['custodian_id']);
+            $query->whereIn('custodian_id', $filters['custodian_id']);
         }
 
         $requests = $query->get();
@@ -67,20 +80,27 @@ class AnalyticsReportController extends Controller
 
         $filtersInfo = [];
         if (!empty($filters['class_code_id'])) {
-            $cc = \App\Models\ClassCode::find($filters['class_code_id']);
-            if ($cc) $filtersInfo[] = "Class: {$cc->course_code} - {$cc->section}";
+            $names = \App\Models\ClassCode::whereIn('id', $filters['class_code_id'])->get()
+                ->map(fn($cc) => "{$cc->course_code} - {$cc->section}")->all();
+            if ($names) $filtersInfo[] = 'Class: ' . implode(', ', $names);
         }
         if (!empty($filters['instructor_id'])) {
-            $inst = \App\Models\User::find($filters['instructor_id']);
-            if ($inst) $filtersInfo[] = "Instructor: {$inst->first_name} {$inst->last_name}";
+            $names = \App\Models\User::whereIn('id', $filters['instructor_id'])->get()
+                ->map(fn($u) => "{$u->first_name} {$u->last_name}")->all();
+            if ($names) $filtersInfo[] = 'Instructor: ' . implode(', ', $names);
         }
         if (!empty($filters['student_id'])) {
-            $stud = \App\Models\User::find($filters['student_id']);
-            if ($stud) $filtersInfo[] = "Student: {$stud->first_name} {$stud->last_name}";
+            $names = \App\Models\User::whereIn('id', $filters['student_id'])->get()
+                ->map(fn($u) => "{$u->first_name} {$u->last_name}")->all();
+            if ($names) $filtersInfo[] = 'Student: ' . implode(', ', $names);
         }
         if (!empty($filters['custodian_id'])) {
-            $cust = \App\Models\User::find($filters['custodian_id']);
-            if ($cust) $filtersInfo[] = "Custodian: {$cust->first_name} {$cust->last_name}";
+            $names = \App\Models\User::whereIn('id', $filters['custodian_id'])->get()
+                ->map(fn($u) => "{$u->first_name} {$u->last_name}")->all();
+            if ($names) $filtersInfo[] = 'Custodian: ' . implode(', ', $names);
+        }
+        if (!empty($filters['walk_in_person'])) {
+            $filtersInfo[] = 'Walk-in: ' . implode(', ', $filters['walk_in_person']);
         }
         $filtersLabel = count($filtersInfo) > 0 ? implode(', ', $filtersInfo) : 'None';
 
@@ -96,7 +116,73 @@ class AnalyticsReportController extends Controller
             'lossAndDamage' => $this->getLossAndDamageReport($start, $end, $filters),
             'inventory' => $this->getInventoryReport($start, $end, $requests, $borrowRequestsReport['itemsBorrowed'], $filters),
             'replacement' => $this->getReplacementReport($filters),
-            'studentRisk' => $this->getStudentRiskReport($start, $end, $now, $filters)
+            'studentRisk' => $this->getStudentRiskReport($start, $end, $now, $filters),
+            'walkIns' => $this->getWalkInsReport($start, $end, $filters)
+        ];
+    }
+
+    /**
+     * Walk-in (alternative desk) transactions in the period. These are custodian-recorded
+     * checkouts to walk-in borrowers — registered students or guests from anywhere.
+     */
+    private function getWalkInsReport(Carbon $start, Carbon $end, array $filters = []): array
+    {
+        $query = WalkInTransaction::with('items')
+            ->whereBetween('borrow_date', [$start, $end]);
+
+        // Only the student filter maps onto walk-ins; class/instructor/custodian
+        // filters have no walk-in equivalent, so they are intentionally ignored.
+        if (!empty($filters['student_id'])) {
+            $query->whereIn('student_id', $filters['student_id']);
+        }
+        // Scope to a single walk-in borrower (registered student OR guest) by name.
+        if (!empty($filters['walk_in_person'])) {
+            $query->whereIn('student_name', $filters['walk_in_person']);
+        }
+
+        $walkIns = $query->orderBy('borrow_date', 'desc')->get();
+
+        $itemsOut = 0;
+        foreach ($walkIns as $w) {
+            if ($w->status === 'borrowed') {
+                $itemsOut += $w->items->sum('quantity');
+            }
+        }
+
+        $summary = [
+            'total' => $walkIns->count(),
+            'out' => $walkIns->where('status', 'borrowed')->count(),
+            'returned' => $walkIns->where('status', 'returned')->count(),
+            'issues' => $walkIns->where('status', 'missing')->count(),
+            'itemsOut' => $itemsOut,
+            'uniquePeople' => $walkIns->pluck('student_name')->unique()->count()
+        ];
+
+        $transactions = $walkIns->take(200)->map(function ($w) {
+            return [
+                'id' => $w->reference,
+                'studentName' => $w->student_name,
+                'studentId' => $w->student_identifier ?? '',
+                'email' => $w->email ?? '',
+                'classCode' => $w->class_code ?? '',
+                'purpose' => $w->purpose ?? '',
+                'usageLocation' => $w->usage_location,
+                'borrowDate' => $w->borrow_date ? $w->borrow_date->toIso8601String() : null,
+                'returnDate' => $w->return_date ? $w->return_date->toIso8601String() : null,
+                'status' => $w->status,
+                'returnedAt' => $w->returned_at ? $w->returned_at->toIso8601String() : null,
+                'notes' => $w->notes,
+                'items' => $w->items->map(fn($i) => [
+                    'name' => $i->name,
+                    'quantity' => (int) $i->quantity,
+                    'category' => $i->category ?? ''
+                ])->values()->toArray()
+            ];
+        })->values()->toArray();
+
+        return [
+            'summary' => $summary,
+            'transactions' => $transactions
         ];
     }
 
@@ -289,21 +375,21 @@ class AnalyticsReportController extends Controller
             ->whereBetween('incident_date', [$start, $end]);
 
         if (!empty($filters['student_id'])) {
-            $query->where('student_id', $filters['student_id']);
+            $query->whereIn('student_id', $filters['student_id']);
         }
         if (!empty($filters['class_code_id'])) {
             $query->whereHas('borrowRequest', function($q) use ($filters) {
-                $q->where('class_code_id', $filters['class_code_id']);
+                $q->whereIn('class_code_id', $filters['class_code_id']);
             });
         }
         if (!empty($filters['instructor_id'])) {
             $query->whereHas('borrowRequest', function($q) use ($filters) {
-                $q->where('instructor_id', $filters['instructor_id']);
+                $q->whereIn('instructor_id', $filters['instructor_id']);
             });
         }
         if (!empty($filters['custodian_id'])) {
             $query->whereHas('borrowRequest', function($q) use ($filters) {
-                $q->where('custodian_id', $filters['custodian_id']);
+                $q->whereIn('custodian_id', $filters['custodian_id']);
             });
         }
 
@@ -421,10 +507,10 @@ class AnalyticsReportController extends Controller
     {
         $outItemsMap = [];
         $query = BorrowRequest::with('items')->where('status', 'borrowed');
-        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
-        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
-        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
-        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+        if (!empty($filters['class_code_id'])) $query->whereIn('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->whereIn('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
+        if (!empty($filters['custodian_id'])) $query->whereIn('custodian_id', $filters['custodian_id']);
         $activeBorrowings = $query->get();
         foreach ($activeBorrowings as $b) {
             foreach ($b->items as $item) {
@@ -458,10 +544,10 @@ class AnalyticsReportController extends Controller
         $query = BorrowRequest::with('items')
             ->whereBetween('created_at', [$start, $end])
             ->whereIn('status', ['returned', 'missing', 'resolved']);
-        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
-        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
-        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
-        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+        if (!empty($filters['class_code_id'])) $query->whereIn('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->whereIn('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
+        if (!empty($filters['custodian_id'])) $query->whereIn('custodian_id', $filters['custodian_id']);
         $completedRequests = $query->get();
         foreach ($completedRequests as $r) {
             foreach ($r->items as $item) {
@@ -559,21 +645,21 @@ class AnalyticsReportController extends Controller
     {
         $query = ReplacementObligation::query();
         if (!empty($filters['student_id'])) {
-            $query->where('student_id', $filters['student_id']);
+            $query->whereIn('student_id', $filters['student_id']);
         }
         if (!empty($filters['class_code_id'])) {
             $query->whereHas('borrowRequest', function($q) use ($filters) {
-                $q->where('class_code_id', $filters['class_code_id']);
+                $q->whereIn('class_code_id', $filters['class_code_id']);
             });
         }
         if (!empty($filters['instructor_id'])) {
             $query->whereHas('borrowRequest', function($q) use ($filters) {
-                $q->where('instructor_id', $filters['instructor_id']);
+                $q->whereIn('instructor_id', $filters['instructor_id']);
             });
         }
         if (!empty($filters['custodian_id'])) {
             $query->whereHas('borrowRequest', function($q) use ($filters) {
-                $q->where('custodian_id', $filters['custodian_id']);
+                $q->whereIn('custodian_id', $filters['custodian_id']);
             });
         }
         $allObligations = $query->get();
@@ -627,10 +713,10 @@ class AnalyticsReportController extends Controller
         $monthlyActivity = [];
         $resolvedIn6MonthsQuery = ReplacementObligation::where('status', 'replaced')
             ->where('resolution_date', '>=', $sixMonthsAgo);
-        if (!empty($filters['student_id'])) $resolvedIn6MonthsQuery->where('student_id', $filters['student_id']);
-        if (!empty($filters['class_code_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->where('class_code_id', $filters['class_code_id']));
-        if (!empty($filters['instructor_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->where('instructor_id', $filters['instructor_id']));
-        if (!empty($filters['custodian_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->where('custodian_id', $filters['custodian_id']));
+        if (!empty($filters['student_id'])) $resolvedIn6MonthsQuery->whereIn('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('class_code_id', $filters['class_code_id']));
+        if (!empty($filters['instructor_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('instructor_id', $filters['instructor_id']));
+        if (!empty($filters['custodian_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('custodian_id', $filters['custodian_id']));
         
         $resolvedIn6Months = $resolvedIn6MonthsQuery->get()
             ->groupBy(fn($o) => $o->resolution_date->format('Y-m'));
@@ -691,10 +777,10 @@ class AnalyticsReportController extends Controller
     {
         $query = ReplacementObligation::where('status', 'pending')
             ->with('student');
-        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
-        if (!empty($filters['class_code_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('class_code_id', $filters['class_code_id']));
-        if (!empty($filters['instructor_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('instructor_id', $filters['instructor_id']));
-        if (!empty($filters['custodian_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('custodian_id', $filters['custodian_id']));
+        if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('class_code_id', $filters['class_code_id']));
+        if (!empty($filters['instructor_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('instructor_id', $filters['instructor_id']));
+        if (!empty($filters['custodian_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('custodian_id', $filters['custodian_id']));
         
         return $query->get()
             ->groupBy('student_id')
@@ -715,10 +801,10 @@ class AnalyticsReportController extends Controller
     {
         $query = ReplacementObligation::whereBetween('incident_date', [$start, $end])
             ->with('student');
-        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
-        if (!empty($filters['class_code_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('class_code_id', $filters['class_code_id']));
-        if (!empty($filters['instructor_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('instructor_id', $filters['instructor_id']));
-        if (!empty($filters['custodian_id'])) $query->whereHas('borrowRequest', fn($q) => $q->where('custodian_id', $filters['custodian_id']));
+        if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('class_code_id', $filters['class_code_id']));
+        if (!empty($filters['instructor_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('instructor_id', $filters['instructor_id']));
+        if (!empty($filters['custodian_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('custodian_id', $filters['custodian_id']));
         
         return $query->get()
             ->groupBy('student_id')
@@ -741,10 +827,10 @@ class AnalyticsReportController extends Controller
         $query = BorrowRequest::where('status', 'borrowed')
             ->where('return_date', '<', $now)
             ->with('student');
-        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
-        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
-        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
-        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+        if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->whereIn('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->whereIn('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['custodian_id'])) $query->whereIn('custodian_id', $filters['custodian_id']);
         
         return $query->get()
             ->groupBy('student_id')
@@ -767,10 +853,10 @@ class AnalyticsReportController extends Controller
     {
         $query = BorrowRequest::whereBetween('created_at', [$start, $end])
             ->whereNotNull('student_id');
-        if (!empty($filters['student_id'])) $query->where('student_id', $filters['student_id']);
-        if (!empty($filters['class_code_id'])) $query->where('class_code_id', $filters['class_code_id']);
-        if (!empty($filters['instructor_id'])) $query->where('instructor_id', $filters['instructor_id']);
-        if (!empty($filters['custodian_id'])) $query->where('custodian_id', $filters['custodian_id']);
+        if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
+        if (!empty($filters['class_code_id'])) $query->whereIn('class_code_id', $filters['class_code_id']);
+        if (!empty($filters['instructor_id'])) $query->whereIn('instructor_id', $filters['instructor_id']);
+        if (!empty($filters['custodian_id'])) $query->whereIn('custodian_id', $filters['custodian_id']);
 
         $activeStudentIds = $query->groupBy('student_id')
             ->orderByRaw('MAX(created_at) DESC')
@@ -822,6 +908,7 @@ class AnalyticsReportController extends Controller
             'instructor_id' => $request->query('instructor_id'),
             'student_id' => $request->query('student_id'),
             'custodian_id' => $request->query('custodian_id'),
+            'walk_in_person' => $request->query('walk_in_person'),
         ];
 
         if (!in_array($period, ['week', 'month', 'semester'])) {
@@ -874,7 +961,8 @@ class AnalyticsReportController extends Controller
                 'lossAndDamage' => ['summary' => $report['lossAndDamage']['summary'], 'tracking' => []],
                 'inventory' => ['summary' => $report['inventory']['summary'], 'requiredItems' => [], 'mostBorrowedItems' => [], 'itemsCurrentlyOut' => [], 'damageRateItems' => [], 'eomVariance' => [], 'varianceDrivers' => [], 'stockAlerts' => [], 'stockAdjustments' => []],
                 'replacement' => ['summary' => $report['replacement']['summary'], 'resolutionBreakdown' => [], 'avgResolutionDays' => 0, 'obligationsByCategory' => [], 'monthlyActivity' => [], 'donationTotals' => []],
-                'studentRisk' => ['repeatOffenders' => [], 'highIncidentStudents' => [], 'overdueStudents' => [], 'trustScores' => []]
+                'studentRisk' => ['repeatOffenders' => [], 'highIncidentStudents' => [], 'overdueStudents' => [], 'trustScores' => []],
+                'walkIns' => ['summary' => $report['walkIns']['summary'], 'transactions' => array_slice($report['walkIns']['transactions'], 0, 10)]
             ];
 
             return response()->json($summary);
@@ -940,19 +1028,23 @@ class AnalyticsReportController extends Controller
             'instructor_id' => $request->query('instructor_id'),
             'student_id' => $request->query('student_id'),
             'custodian_id' => $request->query('custodian_id'),
+            'walk_in_person' => $request->query('walk_in_person'),
         ];
+
+        // Which worksheets to include. Empty ⇒ include everything (back-compat).
+        $sections = array_values(array_filter((array) $request->query('sections', [])));
 
         try {
             $range = $this->getPeriodRange($period, $from, $to);
             $report = $this->getReportData($range['start'], $range['end'], $period, $filters);
 
-            // Build XML payload
-            $xml = $this->generateSpreadsheetML($report, $range['label'], $user);
+            // Build CSV payload (single flat file; sections stacked as labeled blocks).
+            $csv = $this->generateCsv($report, $range['label'], $user, $sections);
 
-            $filename = 'chtm-cooks-analytics-' . strtolower(str_replace(' ', '-', $range['label'])) . '-' . date('Y-m-d') . '.xml';
+            $filename = 'chtm-cooks-analytics-' . strtolower(str_replace(' ', '-', $range['label'])) . '-' . date('Y-m-d') . '.csv';
 
-            return response($xml, 200, [
-                'Content-Type' => 'application/vnd.ms-excel',
+            return response($csv, 200, [
+                'Content-Type' => 'text/csv; charset=UTF-8',
                 'Content-Disposition' => 'attachment; filename="' . $filename . '"',
                 'Cache-Control' => 'no-store'
             ]);
@@ -962,8 +1054,114 @@ class AnalyticsReportController extends Controller
         }
     }
 
-    private function generateSpreadsheetML(array $report, string $rangeLabel, User $user): string
+    /**
+     * Build a clean CSV using fputcsv (same style as the inventory export):
+     * plain header row + data rows, minimal quoting. When a single section is
+     * selected the file is just that one clean table; with several sections each
+     * table is introduced by a short title row and separated by a blank line.
+     */
+    private function generateCsv(array $report, string $rangeLabel, User $user, array $sections = []): string
     {
+        $want = fn(string $id): bool => empty($sections) || in_array($id, $sections, true);
+        $fmtStatus = fn($s): string => $s ? ucwords(str_replace('_', ' ', $s)) : '';
+        $fmtDate = function ($d, $withTime = true): string {
+            if (!$d) return '';
+            try { return Carbon::parse($d)->format($withTime ? 'M j, Y H:i' : 'M j, Y'); }
+            catch (\Exception $e) { return (string) $d; }
+        };
+
+        $br = $report['borrowRequests'];
+        $inv = $report['inventory'];
+
+        // Assemble the requested tables as { title, header, rows } blocks.
+        $blocks = [];
+
+        if ($want('overview')) {
+            $totalReqs = count($br['itemEntries']);
+            $totalReturned = count(array_filter($br['itemEntries'], fn($e) => $e['requestStatus'] === 'returned'));
+            $retRate = $totalReqs > 0 ? round(($totalReturned / $totalReqs) * 100) : 0;
+            $ovRows = [
+                ['Total request entries', $totalReqs],
+                ['Return rate (%)', $retRate],
+                ['Overdue items', $br['overdueCount']],
+                ['Avg items / request', $br['borrowingAverages']['avgItemsPerRequest'] ?? 0],
+                ['Avg quantity / request', $br['borrowingAverages']['avgQuantityPerRequest'] ?? 0],
+            ];
+            foreach ($br['statusBreakdown'] as $sb) {
+                $ovRows[] = ['Status: ' . $fmtStatus($sb['status']), $sb['count']];
+            }
+            $blocks[] = ['title' => 'Overview', 'header' => ['Metric', 'Value'], 'rows' => $ovRows];
+        }
+
+        if ($want('borrowing')) {
+            $rows = [];
+            foreach ($br['itemEntries'] as $e) {
+                $rows[] = [$e['name'], $e['category'], $e['studentName'], $e['studentEmail'], $e['quantity'], $fmtDate($e['requestDate']), $fmtStatus($e['requestStatus'])];
+            }
+            $blocks[] = ['title' => 'Borrowing', 'header' => ['Item', 'Category', 'Borrower', 'Email', 'Quantity', 'Date', 'Status'], 'rows' => $rows];
+        }
+
+        if ($want('inventory')) {
+            $rows = [];
+            foreach ($inv['eomVariance'] as $i) {
+                $rows[] = [$i['name'], $i['category'], $i['quantity'], $i['eomCount'], $i['variance']];
+            }
+            $blocks[] = ['title' => 'Inventory Variance', 'header' => ['Item', 'Category', 'Current Count', 'EOM Count', 'Variance'], 'rows' => $rows];
+
+            if (!empty($inv['stockAdjustments'])) {
+                $adjRows = [];
+                foreach ($inv['stockAdjustments'] as $a) {
+                    $type = ($a['quantity'] ?? 0) > 0 ? 'Restock' : 'Loss/Damage';
+                    $adjRows[] = [$a['itemName'], $type, $a['quantity'], $a['purpose'] ?? '', $a['notes'] ?? '', $fmtDate($a['createdAt'] ?? $a['date'] ?? null, false)];
+                }
+                $blocks[] = ['title' => 'Stock Adjustments', 'header' => ['Item', 'Type', 'Quantity', 'Reason', 'Notes', 'Date'], 'rows' => $adjRows];
+            }
+        }
+
+        if ($want('students')) {
+            $rows = [];
+            foreach ($report['studentRisk']['trustScores'] as $s) {
+                $rows[] = [$s['studentName'], $s['studentEmail'], $s['trustScore'], $s['trustTierLabel'], $s['requestsTotal'], $s['requestsReturned'], $s['activeObligations']];
+            }
+            $blocks[] = ['title' => 'Student Risk', 'header' => ['Student', 'Email', 'Trust Score', 'Tier', 'Requests', 'Returned', 'Active Obligations'], 'rows' => $rows];
+        }
+
+        if ($want('walk-in')) {
+            $rows = [];
+            foreach ($report['walkIns']['transactions'] as $t) {
+                $items = implode('; ', array_map(fn($it) => $it['name'] . ' x' . $it['quantity'], $t['items']));
+                $status = $t['status'] === 'borrowed' ? 'Out' : ($t['status'] === 'returned' ? 'Returned' : 'Issue');
+                $rows[] = [$t['id'], $t['studentName'], $t['classCode'], $items, $fmtDate($t['borrowDate']), $fmtDate($t['returnDate'], false), $status];
+            }
+            $blocks[] = ['title' => 'Walk-in Transactions', 'header' => ['Reference', 'Borrower', 'Class', 'Items', 'Borrowed', 'Due', 'Status'], 'rows' => $rows];
+        }
+
+        // Write with fputcsv for clean, standards-compliant quoting.
+        $fh = fopen('php://temp', 'r+');
+        $single = count($blocks) === 1;
+        foreach ($blocks as $idx => $b) {
+            if (!$single) {
+                if ($idx > 0) fputcsv($fh, []);   // blank separator line
+                fputcsv($fh, [$b['title']]);
+            }
+            fputcsv($fh, $b['header']);
+            foreach ($b['rows'] as $r) {
+                fputcsv($fh, $r);
+            }
+        }
+        rewind($fh);
+        $csv = stream_get_contents($fh);
+        fclose($fh);
+
+        // BOM keeps Excel on UTF-8 for accented names; harmless to other tools.
+        return "\xEF\xBB\xBF" . $csv;
+    }
+
+    private function generateSpreadsheetML(array $report, string $rangeLabel, User $user, array $sections = []): string
+    {
+        // A worksheet is included when no explicit selection was made, or when its id was selected.
+        $want = fn(string $id): bool => empty($sections) || in_array($id, $sections, true);
+
         $author = trim("{$user->first_name} {$user->last_name}");
         $created = date('Y-m-d\TH:i:s\Z');
 
@@ -1138,6 +1336,7 @@ XML;
         $totalReturned = count(array_filter($br['itemEntries'], fn($e) => $e['requestStatus'] === 'returned'));
         $retRate = $totalReqs > 0 ? round(($totalReturned / $totalReqs) * 100) : 0;
 
+        if ($want('overview')) {
         $out .= "\n  <Worksheet ss:Name=\"Overview\">\n    <Table ss:DefaultColumnWidth=\"180\">\n";
         $out .= "      <Column ss:Width=\"180\" ss:Span=\"7\"/>\n";
         $out .= $metaHeaderRows('OVERVIEW');
@@ -1188,7 +1387,10 @@ XML;
         }
         $out .= "    </Table>\n  </Worksheet>\n";
 
+        }
+
         // Tab 2: Borrowing Analytics
+        if ($want('borrowing')) {
         $out .= "  <Worksheet ss:Name=\"Borrowing Analytics\">\n    <Table ss:DefaultColumnWidth=\"150\">\n";
         $out .= "      <Column ss:Width=\"150\" ss:Span=\"7\"/>\n";
         $out .= $metaHeaderRows('BORROWING');
@@ -1221,7 +1423,10 @@ XML;
         }
         $out .= "    </Table>\n  </Worksheet>\n";
 
+        }
+
         // Tab 3: Loss & Damage
+        if ($want('loss-damage')) {
         $out .= "  <Worksheet ss:Name=\"Loss &amp; Damage\">\n    <Table ss:DefaultColumnWidth=\"150\">\n";
         $out .= "      <Column ss:Width=\"150\" ss:Span=\"7\"/>\n";
         $out .= $metaHeaderRows('LOSS_DAMAGE');
@@ -1255,7 +1460,10 @@ XML;
         }
         $out .= "    </Table>\n  </Worksheet>\n";
 
+        }
+
         // Tab 4: Inventory
+        if ($want('inventory')) {
         $out .= "  <Worksheet ss:Name=\"Inventory\">\n    <Table ss:DefaultColumnWidth=\"150\">\n";
         $out .= "      <Column ss:Width=\"150\" ss:Span=\"7\"/>\n";
         $out .= $metaHeaderRows('INVENTORY');
@@ -1286,7 +1494,10 @@ XML;
         }
         $out .= "    </Table>\n  </Worksheet>\n";
 
+        }
+
         // Tab 5: Student Risk
+        if ($want('students')) {
         $out .= "  <Worksheet ss:Name=\"Student Risk\">\n    <Table ss:DefaultColumnWidth=\"150\">\n";
         $out .= "      <Column ss:Width=\"150\" ss:Span=\"7\"/>\n";
         $out .= $metaHeaderRows('STUDENT_RISK');
@@ -1318,6 +1529,66 @@ XML;
             $idx++;
         }
         $out .= "    </Table>\n  </Worksheet>\n";
+
+        }
+
+        // Tab 6: Walk-in Transactions
+        if ($want('walk-in')) {
+        $wi = $report['walkIns'];
+        $out .= "  <Worksheet ss:Name=\"Walk-in Transactions\">\n    <Table ss:DefaultColumnWidth=\"150\">\n";
+        $out .= "      <Column ss:Width=\"150\" ss:Span=\"7\"/>\n";
+        $out .= $metaHeaderRows('WALK_IN');
+
+        // Summary strip
+        $out .= "      <Row ss:Height=\"24\" ss:StyleID=\"SectionTitle\">\n        <Cell ss:MergeAcross=\"7\"><Data ss:Type=\"String\">WALK-IN TRANSACTIONS SUMMARY</Data></Cell>\n      </Row>\n";
+        $out .= "      <Row ss:Height=\"24\">\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Total</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Currently Out</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Returned</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Issues</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Items Out</Data></Cell>\n";
+        $out .= "      </Row>\n";
+        $out .= "      <Row ss:Height=\"22\">\n";
+        $out .= "        <Cell ss:StyleID=\"NumInteger\"><Data ss:Type=\"Number\">{$wi['summary']['total']}</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"NumInteger\"><Data ss:Type=\"Number\">{$wi['summary']['out']}</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"NumInteger\"><Data ss:Type=\"Number\">{$wi['summary']['returned']}</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"NumInteger\"><Data ss:Type=\"Number\">{$wi['summary']['issues']}</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"NumInteger\"><Data ss:Type=\"Number\">{$wi['summary']['itemsOut']}</Data></Cell>\n";
+        $out .= "      </Row>\n";
+        $out .= "      <Row ss:Height=\"12\"/>\n";
+
+        // Transactions log
+        $out .= "      <Row ss:Height=\"24\" ss:StyleID=\"SectionTitle\">\n        <Cell ss:MergeAcross=\"7\"><Data ss:Type=\"String\">WALK-IN TRANSACTIONS LOG</Data></Cell>\n      </Row>\n";
+        $out .= "      <Row ss:Height=\"24\">\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Reference</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Borrower</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Class</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Items</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Borrowed</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Due</Data></Cell>\n";
+        $out .= "        <Cell ss:StyleID=\"Header\"><Data ss:Type=\"String\">Status</Data></Cell>\n";
+        $out .= "      </Row>\n";
+
+        $idx = 0;
+        foreach ($wi['transactions'] as $t) {
+            $style = ($idx % 2 === 1) ? 'AltRow' : 'DataCell';
+            $itemsStr = implode(', ', array_map(fn($it) => $it['name'] . ' x' . $it['quantity'], $t['items']));
+            $borrowed = $t['borrowDate'] ? Carbon::parse($t['borrowDate'])->format('M j, Y H:i') : '';
+            $due = $t['returnDate'] ? Carbon::parse($t['returnDate'])->format('M j, Y') : '';
+            $status = $t['status'] === 'borrowed' ? 'Out' : ($t['status'] === 'returned' ? 'Returned' : 'Issue');
+            $out .= "      <Row>\n";
+            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">" . htmlspecialchars($t['id']) . "</Data></Cell>\n";
+            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">" . htmlspecialchars($t['studentName']) . "</Data></Cell>\n";
+            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">" . htmlspecialchars($t['classCode']) . "</Data></Cell>\n";
+            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">" . htmlspecialchars($itemsStr) . "</Data></Cell>\n";
+            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">{$borrowed}</Data></Cell>\n";
+            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">{$due}</Data></Cell>\n";
+            $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">{$status}</Data></Cell>\n";
+            $out .= "      </Row>\n";
+            $idx++;
+        }
+        $out .= "    </Table>\n  </Worksheet>\n";
+        }
 
         $out .= "\n</Workbook>\n";
         return $out;
