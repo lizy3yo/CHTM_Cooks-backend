@@ -129,6 +129,9 @@ class AuthController extends Controller
                 'profilePhotoUrl' => $user->profile_photo_url,
                 'isActive' => $user->is_active,
                 'createdAt' => $user->created_at->toIso8601String(),
+                'onboardingCompletedAt' => $user->onboarding_completed_at
+                    ? $user->onboarding_completed_at->toIso8601String()
+                    : null,
             ]
         ];
 
@@ -241,6 +244,11 @@ class AuthController extends Controller
             'profilePhotoUrl' => $user->profile_photo_url,
             'isActive' => $user->is_active,
             'createdAt' => $user->created_at->toIso8601String(),
+            // Null until the user finishes/skips the guided tour. Drives the
+            // first-run tour for every new or imported account, on any device.
+            'onboardingCompletedAt' => $user->onboarding_completed_at
+                ? $user->onboarding_completed_at->toIso8601String()
+                : null,
         ];
 
         if ($user->role === 'student') {
@@ -251,6 +259,38 @@ class AuthController extends Controller
         }
 
         return response()->json(['user' => $userResponse]);
+    }
+
+    /**
+     * POST /api/auth/onboarding/complete
+     * Marks the guided tour as finished (or skipped) for the signed-in user.
+     */
+    public function completeOnboarding(Request $request)
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return response()->json(['error' => 'Unauthenticated'], 401);
+        }
+        $user->onboarding_completed_at = Carbon::now();
+        $user->save();
+        return response()->json([
+            'onboardingCompletedAt' => $user->onboarding_completed_at->toIso8601String()
+        ]);
+    }
+
+    /**
+     * DELETE /api/auth/onboarding/complete
+     * Clears the flag so the tour behaves as it does for a brand-new user.
+     */
+    public function resetOnboarding(Request $request)
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return response()->json(['error' => 'Unauthenticated'], 401);
+        }
+        $user->onboarding_completed_at = null;
+        $user->save();
+        return response()->json(['onboardingCompletedAt' => null]);
     }
 
     /**

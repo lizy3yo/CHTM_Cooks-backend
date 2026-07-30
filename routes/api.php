@@ -153,6 +153,11 @@ Route::prefix('auth')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
 
+        // Guided-tour completion, stored per account so it follows the user
+        // across devices and applies to newly created / imported users.
+        Route::post('/onboarding/complete', [AuthController::class, 'completeOnboarding']);
+        Route::delete('/onboarding/complete', [AuthController::class, 'resetOnboarding']);
+
         Route::get('/profile', [UserController::class, 'getProfile']);
         Route::patch('/profile', [UserController::class, 'updateProfile']);
         Route::post('/profile/photo', [UserController::class, 'uploadProfilePhoto']);

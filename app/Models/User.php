@@ -37,6 +37,7 @@ class User extends Authenticatable
         'block',
         'agreed_to_terms',
         'trust_score',
+        'onboarding_completed_at',
     ];
 
     /**
@@ -62,6 +63,7 @@ class User extends Authenticatable
             'email_verified' => 'boolean',
             'agreed_to_terms' => 'boolean',
             'trust_score' => 'integer',
+            'onboarding_completed_at' => 'datetime',
             'last_login' => 'datetime',
             'email_verification_expires' => 'datetime',
             'password_reset_expires' => 'datetime',
