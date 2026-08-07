@@ -343,6 +343,11 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'Appeal reason is required'], 400);
         }
 
+        $targetDate = $req->borrow_date ?? $req->return_date;
+        if ($targetDate && Carbon::parse($targetDate)->endOfDay()->isPast()) {
+            return response()->json(['error' => 'Appeals are unavailable because the requested borrow date has passed.'], 400);
+        }
+
         $user = auth()->user();
 
         $req->status = 'pending_appeal';
