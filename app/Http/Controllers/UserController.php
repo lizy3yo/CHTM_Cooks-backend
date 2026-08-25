@@ -48,11 +48,12 @@ class UserController extends Controller
         }
 
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where(function ($q) use ($search) {
-                $q->where('email', 'like', $search)
-                  ->orWhere('first_name', 'like', $search)
-                  ->orWhere('last_name', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->where(function ($q) use ($like) {
+                $q->whereRaw('LOWER(email) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(first_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(last_name) LIKE ?', [$like]);
             });
         }
 

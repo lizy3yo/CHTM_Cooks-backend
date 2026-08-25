@@ -139,13 +139,14 @@ class BorrowRequestController extends Controller
         }
 
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where(function ($q) use ($search) {
-                $q->where('purpose', 'like', $search)
-                    ->orWhereHas('student', function ($sq) use ($search) {
-                        $sq->where('first_name', 'like', $search)
-                            ->orWhere('last_name', 'like', $search)
-                            ->orWhere('email', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->where(function ($q) use ($like) {
+                $q->whereRaw('LOWER(purpose) LIKE ?', [$like])
+                    ->orWhereHas('student', function ($sq) use ($like) {
+                        $sq->whereRaw('LOWER(first_name) LIKE ?', [$like])
+                            ->orWhereRaw('LOWER(last_name) LIKE ?', [$like])
+                            ->orWhereRaw('LOWER(email) LIKE ?', [$like]);
                     });
             });
         }

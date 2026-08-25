@@ -139,16 +139,21 @@ class InventoryController extends Controller
         $query = InventoryItem::query()->where('archived', false);
 
         if ($search) {
-            $like = '%' . $search . '%';
-            $query->where(function ($q) use ($like) {
-                $q->where('name', 'like', $like)
-                  ->orWhere('specification', 'like', $like)
-                  ->orWhere('description', 'like', $like);
+            $searchVal = trim((string) $search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->where(function ($q) use ($like, $searchVal) {
+                $q->whereRaw('LOWER(name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(specification) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(description) LIKE ?', [$like]);
+                if (is_numeric($searchVal)) {
+                    $q->orWhere('id', (int) $searchVal);
+                }
             });
         }
 
         if ($category && $category !== 'all') {
-            $query->where('category', 'like', '%' . $category . '%');
+            $catLike = '%' . mb_strtolower(trim((string) $category)) . '%';
+            $query->whereRaw('LOWER(category) LIKE ?', [$catLike]);
         }
 
         if ($required === 'required') {
@@ -203,10 +208,11 @@ class InventoryController extends Controller
         }
 
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', $search)
-                  ->orWhere('description', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->where(function ($q) use ($like) {
+                $q->whereRaw('LOWER(name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(description) LIKE ?', [$like]);
             });
         }
 
@@ -358,12 +364,16 @@ class InventoryController extends Controller
 
 
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', $search)
-                  ->orWhere('specification', 'like', $search)
-                  ->orWhere('description', 'like', $search)
-                  ->orWhere('id', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $driver = DB::connection()->getDriverName();
+            $cast = $driver === 'pgsql' ? 'TEXT' : 'CHAR';
+
+            $query->where(function ($q) use ($like, $searchVal, $cast) {
+                $q->whereRaw('LOWER(name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(specification) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(description) LIKE ?', [$like])
+                  ->orWhereRaw("CAST(id AS {$cast}) LIKE ?", [$like]);
             });
         }
 
@@ -766,8 +776,9 @@ class InventoryController extends Controller
         $query = InventoryItem::where('archived', true);
 
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where('name', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->whereRaw('LOWER(name) LIKE ?', [$like]);
         }
 
         if ($request->filled('category')) {

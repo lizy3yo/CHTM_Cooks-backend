@@ -48,11 +48,12 @@ class DonationAndObligationController extends Controller
         $query = Donation::query()->with('item');
 
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where(function ($q) use ($search) {
-                $q->where('receipt_number', 'like', $search)
-                  ->orWhere('donor_name', 'like', $search)
-                  ->orWhere('item_name', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->where(function ($q) use ($like) {
+                $q->whereRaw('LOWER(receipt_number) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(donor_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(item_name) LIKE ?', [$like]);
             });
         }
 

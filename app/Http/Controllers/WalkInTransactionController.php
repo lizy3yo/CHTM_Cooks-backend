@@ -73,11 +73,12 @@ class WalkInTransactionController extends Controller
             $query->where('status', $request->status);
         }
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where(function ($q) use ($search) {
-                $q->where('student_name', 'like', $search)
-                  ->orWhere('student_identifier', 'like', $search)
-                  ->orWhere('reference', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->where(function ($q) use ($like) {
+                $q->whereRaw('LOWER(student_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(student_identifier) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(reference) LIKE ?', [$like]);
             });
         }
 

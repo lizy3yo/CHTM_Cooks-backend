@@ -83,12 +83,13 @@ class ClassCodeController extends Controller
         }
 
         if ($request->filled('search')) {
-            $search = '%' . $request->search . '%';
-            $query->where(function ($q) use ($search) {
-                $q->where('code', 'like', $search)
-                  ->orWhere('course_code', 'like', $search)
-                  ->orWhere('course_name', 'like', $search)
-                  ->orWhere('section', 'like', $search);
+            $searchVal = trim((string) $request->search);
+            $like = '%' . mb_strtolower($searchVal) . '%';
+            $query->where(function ($q) use ($like) {
+                $q->whereRaw('LOWER(code) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(course_code) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(course_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(section) LIKE ?', [$like]);
             });
         }
 
