@@ -16,9 +16,12 @@ class WalkInTransactionController extends Controller
     private const VIEW_ROLES = ['instructor', 'custodian', 'superadmin', 'admin'];
 
     /** Roles allowed to record / return walk-in transactions. */
-    private const MANAGE_ROLES = ['custodian', 'superadmin', 'admin'];
+    private const MANAGE_ROLES = ['instructor', 'custodian', 'superadmin', 'admin'];
 
-    private function transform(WalkInTransaction $t): array
+    /**
+     * @param WalkInTransaction|\stdClass $t
+     */
+    private function transform($t): array
     {
         return [
             // The reference is what the UI shows and keys on as the transaction id.
