@@ -14,7 +14,7 @@ use DB;
 class ClassCodeController extends Controller
 {
     /**
-     * @param \App\Models\ClassCode $class
+     * @param ClassCode $class
      * @param bool $populate
      * @return array
      */
@@ -274,7 +274,7 @@ class ClassCodeController extends Controller
 
         $validator = Validator::make($request->all(), [
             'studentIds' => 'required|array',
-            'studentIds.*' => 'integer|exists:users,id'
+            'studentIds.*' => 'exists:users,id'
         ]);
 
         if ($validator->fails()) {
@@ -298,7 +298,7 @@ class ClassCodeController extends Controller
 
         $validator = Validator::make($request->all(), [
             'studentIds' => 'required|array',
-            'studentIds.*' => 'integer|exists:users,id'
+            'studentIds.*' => 'exists:users,id'
         ]);
 
         if ($validator->fails()) {
