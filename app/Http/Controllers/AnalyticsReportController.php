@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\User;
+use App\Models\ClassCode;
 use App\Models\BorrowRequest;
 use App\Models\BorrowRequestItem;
 use App\Models\ReplacementObligation;
@@ -16,6 +17,7 @@ use Carbon\Carbon;
 use DB;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Support\Collection;
 
 class AnalyticsReportController extends Controller
 {
@@ -81,22 +83,22 @@ class AnalyticsReportController extends Controller
 
         $filtersInfo = [];
         if (!empty($filters['class_code_id'])) {
-            $names = \App\Models\ClassCode::whereIn('id', $filters['class_code_id'])->get()
+            $names = ClassCode::whereIn('id', $filters['class_code_id'])->get()
                 ->map(fn($cc) => "{$cc->course_code} - {$cc->section}")->all();
             if ($names) $filtersInfo[] = 'Class: ' . implode(', ', $names);
         }
         if (!empty($filters['instructor_id'])) {
-            $names = \App\Models\User::whereIn('id', $filters['instructor_id'])->get()
+            $names = User::whereIn('id', $filters['instructor_id'])->get()
                 ->map(fn($u) => "{$u->first_name} {$u->last_name}")->all();
             if ($names) $filtersInfo[] = 'Instructor: ' . implode(', ', $names);
         }
         if (!empty($filters['student_id'])) {
-            $names = \App\Models\User::whereIn('id', $filters['student_id'])->get()
+            $names = User::whereIn('id', $filters['student_id'])->get()
                 ->map(fn($u) => "{$u->first_name} {$u->last_name}")->all();
             if ($names) $filtersInfo[] = 'Student: ' . implode(', ', $names);
         }
         if (!empty($filters['custodian_id'])) {
-            $names = \App\Models\User::whereIn('id', $filters['custodian_id'])->get()
+            $names = User::whereIn('id', $filters['custodian_id'])->get()
                 ->map(fn($u) => "{$u->first_name} {$u->last_name}")->all();
             if ($names) $filtersInfo[] = 'Custodian: ' . implode(', ', $names);
         }
@@ -733,17 +735,33 @@ class AnalyticsReportController extends Controller
             });
         }
         $allObligations = $query->get();
+        $sixMonthsAgo = Carbon::now()->subMonths(6)->startOfMonth();
+
+        return [
+            'summary' => $this->buildReplacementSummary($allObligations),
+            'resolutionBreakdown' => $this->buildResolutionBreakdown($allObligations),
+            'avgResolutionDays' => $this->calculateAvgResolutionDays($allObligations),
+            'obligationsByCategory' => $this->buildObligationsByCategory($allObligations),
+            'monthlyActivity' => $this->buildReplacementMonthlyActivity($sixMonthsAgo, $filters),
+            'donationTotals' => $this->buildDonationTotals($sixMonthsAgo)
+        ];
+    }
+
+    private function buildReplacementSummary(Collection $allObligations): array
+    {
         $totalItemsPending = $allObligations->where('status', 'pending')->sum(fn($o) => $o->amount - $o->amount_paid);
         $totalItemsReplaced = $allObligations->where('status', 'replaced')->sum('amount_paid');
 
-        $replacementSummary = [
+        return [
             'totalItemsPending' => $totalItemsPending,
             'totalItemsReplaced' => $totalItemsReplaced,
             'totalObligations' => $allObligations->count(),
             'pendingCount' => $allObligations->where('status', 'pending')->count()
         ];
+    }
 
-        // Resolution Breakdown
+    private function buildResolutionBreakdown(Collection $allObligations): array
+    {
         $resolutionBreakdown = [];
         $resolutionGroup = $allObligations->where('status', 'replaced')->groupBy('resolution_type');
         foreach ($resolutionGroup as $type => $group) {
@@ -754,17 +772,25 @@ class AnalyticsReportController extends Controller
                 'totalAmount' => $group->sum('amount_paid')
             ];
         }
+        return $resolutionBreakdown;
+    }
 
-        // Avg resolution days
-        $resolvedObligations = $allObligations->where('status', 'replaced')->whereNotNull('resolution_date')->whereNotNull('incident_date');
-        $totalResolutionDays = 0; $resolvedCount = 0;
+    private function calculateAvgResolutionDays(Collection $allObligations): float
+    {
+        $resolvedObligations = $allObligations->where('status', 'replaced')
+            ->whereNotNull('resolution_date')
+            ->whereNotNull('incident_date');
+        $totalResolutionDays = 0;
+        $resolvedCount = 0;
         foreach ($resolvedObligations as $o) {
             $totalResolutionDays += $o->resolution_date->diffInHours($o->incident_date) / 24;
             $resolvedCount++;
         }
-        $avgResolutionDays = $resolvedCount > 0 ? round($totalResolutionDays / $resolvedCount, 1) : 0;
+        return $resolvedCount > 0 ? round($totalResolutionDays / $resolvedCount, 1) : 0.0;
+    }
 
-        // Obligations by Category
+    private function buildObligationsByCategory(Collection $allObligations): array
+    {
         $obligationsByCategory = [];
         $oblCategoryGroup = $allObligations->groupBy('item_category');
         foreach ($oblCategoryGroup as $category => $group) {
@@ -776,17 +802,26 @@ class AnalyticsReportController extends Controller
             ];
         }
         usort($obligationsByCategory, fn($a, $b) => $b['count'] - $a['count']);
-        $obligationsByCategory = array_slice($obligationsByCategory, 0, 10);
+        return array_slice($obligationsByCategory, 0, 10);
+    }
 
-        // Monthly replacement activity (last 6 months)
-        $sixMonthsAgo = Carbon::now()->subMonths(6)->startOfMonth();
+    private function buildReplacementMonthlyActivity(Carbon $sixMonthsAgo, array $filters = []): array
+    {
         $monthlyActivity = [];
         $resolvedIn6MonthsQuery = ReplacementObligation::where('status', 'replaced')
             ->where('resolution_date', '>=', $sixMonthsAgo);
-        if (!empty($filters['student_id'])) $resolvedIn6MonthsQuery->whereIn('student_id', $filters['student_id']);
-        if (!empty($filters['class_code_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('class_code_id', $filters['class_code_id']));
-        if (!empty($filters['instructor_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('instructor_id', $filters['instructor_id']));
-        if (!empty($filters['custodian_id'])) $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('custodian_id', $filters['custodian_id']));
+        if (!empty($filters['student_id'])) {
+            $resolvedIn6MonthsQuery->whereIn('student_id', $filters['student_id']);
+        }
+        if (!empty($filters['class_code_id'])) {
+            $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('class_code_id', $filters['class_code_id']));
+        }
+        if (!empty($filters['instructor_id'])) {
+            $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('instructor_id', $filters['instructor_id']));
+        }
+        if (!empty($filters['custodian_id'])) {
+            $resolvedIn6MonthsQuery->whereHas('borrowRequest', fn($q) => $q->whereIn('custodian_id', $filters['custodian_id']));
+        }
         
         $resolvedIn6Months = $resolvedIn6MonthsQuery->get()
             ->groupBy(fn($o) => $o->resolution_date->format('Y-m'));
@@ -804,7 +839,11 @@ class AnalyticsReportController extends Controller
             ];
         }
 
-        // Donation totals (last 6 months)
+        return $monthlyActivity;
+    }
+
+    private function buildDonationTotals(Carbon $sixMonthsAgo): array
+    {
         $donationTotals = [];
         $donationsIn6Months = Donation::where('donor_name', '!=', 'Custodian Stock Adjustment')
             ->where('created_at', '>=', $sixMonthsAgo)
@@ -823,14 +862,7 @@ class AnalyticsReportController extends Controller
             ];
         }
 
-        return [
-            'summary' => $replacementSummary,
-            'resolutionBreakdown' => $resolutionBreakdown,
-            'avgResolutionDays' => $avgResolutionDays,
-            'obligationsByCategory' => $obligationsByCategory,
-            'monthlyActivity' => $monthlyActivity,
-            'donationTotals' => $donationTotals
-        ];
+        return $donationTotals;
     }
 
     private function getStudentRiskReport(Carbon $start, Carbon $end, Carbon $now, array $filters = []): array

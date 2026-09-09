@@ -208,13 +208,17 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'You already have an active pending request awaiting action.'], 403);
         }
 
-        // Check if student has active replacement obligations
+        // Check if student has active replacement obligations or unresolved missing/damaged items
         $hasUnpaidObligations = ReplacementObligation::where('student_id', $user->id)
             ->where('status', 'pending')
             ->exists();
 
-        if ($hasUnpaidObligations) {
-            return response()->json(['error' => 'You have outstanding replacement obligations. Please resolve them before submitting new borrow requests.'], 403);
+        $hasUnresolvedMissingRequest = BorrowRequest::where('student_id', $user->id)
+            ->where('status', 'missing')
+            ->exists();
+
+        if ($hasUnpaidObligations || $hasUnresolvedMissingRequest) {
+            return response()->json(['error' => 'You have outstanding replacement obligations for missing or damaged items. Please process and settle them before submitting new borrow requests.'], 403);
         }
 
         // Get class instructors to route the request to
