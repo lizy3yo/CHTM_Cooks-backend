@@ -48,6 +48,23 @@ Route::get('/seed', function () {
     }
 });
 
+// Secure route to seed demo data (classes, students, requests, donations, walk-ins)
+// Usage: /api/seed-demo?token=chtm_secure_seed_2026  (safe to rerun, never duplicates)
+Route::get('/seed-demo', function () {
+    if (request('token') !== 'chtm_secure_seed_2026') {
+        return response()->json(['error' => 'Unauthorized'], 401);
+    }
+    try {
+        set_time_limit(120);
+        Artisan::call('db:seed', ['--class' => 'StudentClassSeeder', '--force' => true]);
+        return response("<h2>Demo Data Seeded!</h2><pre>" . Artisan::output() . "</pre>", 200)
+            ->header('Content-Type', 'text/html');
+    } catch (\Throwable $e) {
+        return response("<h2>Error during demo seeding:</h2><pre>" . $e->getMessage() . "</pre>", 500)
+            ->header('Content-Type', 'text/html');
+    }
+});
+
 // Secure route to clear inventory and Cloudinary assets from the browser (Render Free Tier)
 Route::get('/clear-inventory', function () {
     if (request('token') !== 'chtm_secure_seed_2026') {

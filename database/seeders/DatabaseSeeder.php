@@ -81,5 +81,11 @@ class DatabaseSeeder extends Seeder
                 'trust_score' => 100,
             ]
         );
+
+        // 6. Demo data (classes, students, requests, donations, walk-ins).
+        //    Opt-in so production only gets it when SEED_DEMO_DATA=true.
+        if (filter_var(env('SEED_DEMO_DATA', false), FILTER_VALIDATE_BOOLEAN)) {
+            $this->call(StudentClassSeeder::class);
+        }
     }
 }
