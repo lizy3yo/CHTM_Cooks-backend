@@ -21,6 +21,18 @@ use Illuminate\Support\Collection;
 
 class AnalyticsReportController extends Controller
 {
+    /**
+     * Borrow request status as shown in exports ("pending_return" → "Pending Return").
+     * pending_instructor is shown as "Pending Approval", matching the app.
+     */
+    private static function statusLabel(string $status): string
+    {
+        if ($status === 'pending_instructor') {
+            return 'Pending Approval';
+        }
+        return ucwords(str_replace('_', ' ', $status));
+    }
+
     private function getPeriodRange(string $period, ?string $from = null, ?string $to = null): array
     {
         $end = $to ? Carbon::parse($to) : Carbon::now();
@@ -1208,7 +1220,7 @@ class AnalyticsReportController extends Controller
     private function generateCsv(array $report, string $rangeLabel, User $user, array $sections = []): string
     {
         $want = fn(string $id): bool => empty($sections) || in_array($id, $sections, true);
-        $fmtStatus = fn($s): string => $s ? ucwords(str_replace('_', ' ', $s)) : '';
+        $fmtStatus = fn($s): string => $s ? self::statusLabel($s) : '';
         $fmtDate = function ($d, $withTime = true): string {
             if (!$d) return '';
             try { return Carbon::parse($d)->format($withTime ? 'M j, Y H:i' : 'M j, Y'); }
@@ -1510,7 +1522,7 @@ XML;
             foreach ($br['statusBreakdown'] as $sb) {
                 $style = ($idx % 2 === 1) ? 'AltRow' : 'DataCell';
                 $numStyle = ($idx % 2 === 1) ? 'NumIntegerAlt' : 'NumInteger';
-                $label = ucwords(str_replace('_', ' ', $sb['status']));
+                $label = self::statusLabel($sb['status']);
                 $out .= "      <Row><Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">{$label}</Data></Cell><Cell ss:StyleID=\"{$numStyle}\"><Data ss:Type=\"Number\">{$sb['count']}</Data></Cell></Row>\n";
                 $idx++;
             }
@@ -1555,7 +1567,7 @@ XML;
             $style = ($idx % 2 === 1) ? 'AltRow' : 'DataCell';
             $numStyle = ($idx % 2 === 1) ? 'NumIntegerAlt' : 'NumInteger';
             $date = Carbon::parse($entry['requestDate'])->format('M j, Y H:i');
-            $status = ucwords(str_replace('_', ' ', $entry['requestStatus']));
+            $status = self::statusLabel($entry['requestStatus']);
             $out .= "      <Row>\n";
             $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">" . htmlspecialchars($entry['name']) . "</Data></Cell>\n";
             $out .= "        <Cell ss:StyleID=\"{$style}\"><Data ss:Type=\"String\">" . htmlspecialchars($entry['category']) . "</Data></Cell>\n";
