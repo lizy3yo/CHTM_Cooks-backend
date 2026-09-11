@@ -23,12 +23,12 @@ class AnalyticsReportController extends Controller
 {
     /**
      * Borrow request status as shown in exports ("pending_return" → "Pending Return").
-     * pending_instructor is shown as "Pending Approval", matching the app.
+     * pending_instructor is shown as "Under Review", matching the app.
      */
     private static function statusLabel(string $status): string
     {
         if ($status === 'pending_instructor') {
-            return 'Pending Approval';
+            return 'Under Review';
         }
         return ucwords(str_replace('_', ' ', $status));
     }

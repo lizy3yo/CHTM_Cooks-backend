@@ -66,7 +66,7 @@ class NotificationService
                 if ($role === 'student') {
                     return [
                         'title' => "Request submitted ({$code})",
-                        'message' => "Your borrow request has been submitted and is now pending approval.",
+                        'message' => "Your borrow request has been submitted and is now under review.",
                         'emailSummary' => "Your request has been received and queued for instructor review."
                     ];
                 }
@@ -160,7 +160,7 @@ class NotificationService
                 if ($role === 'student') {
                     return [
                         'title' => "Appeal submitted ({$code})",
-                        'message' => "Your appeal has been submitted and is pending approval.",
+                        'message' => "Your appeal has been submitted and is under review.",
                         'emailSummary' => "Your appeal has been received and is awaiting instructor review."
                     ];
                 }
