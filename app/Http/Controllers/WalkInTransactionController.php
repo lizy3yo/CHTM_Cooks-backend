@@ -15,8 +15,8 @@ class WalkInTransactionController extends Controller
     /** Roles allowed to view walk-in transactions. */
     private const VIEW_ROLES = ['instructor', 'custodian', 'superadmin', 'admin'];
 
-    /** Roles allowed to record / return walk-in transactions. */
-    private const MANAGE_ROLES = ['instructor', 'custodian', 'superadmin', 'admin'];
+    /** Roles allowed to record / return walk-in transactions. Admin is view-only. */
+    private const MANAGE_ROLES = ['instructor', 'custodian', 'superadmin'];
 
     /**
      * @param WalkInTransaction|\stdClass $t
