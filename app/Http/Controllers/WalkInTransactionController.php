@@ -40,6 +40,8 @@ class WalkInTransactionController extends Controller
                 'name' => $i->name,
                 'quantity' => (int) $i->quantity,
                 'category' => $i->category ?? '',
+                // Photo comes from the inventory item (walk-in lines don't store one).
+                'picture' => $i->inventoryItem?->picture,
                 'inspectionStatus' => $i->inspection_status,
                 // Inspection details (null until the item has been inspected).
                 'inspectionNotes' => $i->inspection_notes ?? null,
@@ -83,7 +85,7 @@ class WalkInTransactionController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $query = WalkInTransaction::with(['items', 'creator'])->orderBy('created_at', 'desc');
+        $query = WalkInTransaction::with(['items.inventoryItem', 'creator'])->orderBy('created_at', 'desc');
 
         if ($request->filled('status') && in_array($request->status, ['borrowed', 'returned', 'missing'])) {
             $query->where('status', $request->status);
@@ -165,7 +167,7 @@ class WalkInTransactionController extends Controller
                     ]);
                 }
 
-                return $walkIn->load(['items', 'creator']);
+                return $walkIn->load(['items.inventoryItem', 'creator']);
             });
 
             return response()->json($this->transform($transaction), 201);
@@ -185,7 +187,7 @@ class WalkInTransactionController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $walkIn = WalkInTransaction::with(['items', 'creator'])->where('reference', $reference)->first();
+        $walkIn = WalkInTransaction::with(['items.inventoryItem', 'creator'])->where('reference', $reference)->first();
         if (!$walkIn) {
             return response()->json(['error' => 'Walk-in transaction not found'], 404);
         }
@@ -241,7 +243,7 @@ class WalkInTransactionController extends Controller
                 $walkIn->save();
             });
 
-            return response()->json($this->transform($walkIn->fresh(['items', 'creator'])));
+            return response()->json($this->transform($walkIn->fresh(['items.inventoryItem', 'creator'])));
         } catch (\Exception $e) {
             Log::error('Failed to process walk-in return: ' . $e->getMessage());
             return response()->json(['error' => 'Failed to process return'], 500);

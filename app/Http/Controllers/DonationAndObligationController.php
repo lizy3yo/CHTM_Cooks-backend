@@ -38,6 +38,8 @@ class DonationAndObligationController extends Controller
             'notes' => $donation->notes,
             'inventoryAction' => $donation->inventory_action,
             'inventoryItemId' => $donation->inventory_item_id ? (string) $donation->inventory_item_id : null,
+            // Photo of the donated inventory item.
+            'picture' => $donation->item?->picture,
             // Staff member who logged the donation (shown in the details window).
             'recordedBy' => $donation->creator ? trim($donation->creator->first_name . ' ' . $donation->creator->last_name) : null,
             'createdAt' => $donation->created_at->toIso8601String(),

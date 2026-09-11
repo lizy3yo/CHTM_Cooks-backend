@@ -35,4 +35,13 @@ class WalkInTransactionItem extends Model
     {
         return $this->belongsTo(WalkInTransaction::class, 'walk_in_transaction_id');
     }
+
+    /**
+     * The inventory item this line refers to (includes soft-deleted items so
+     * older walk-ins still show their photo).
+     */
+    public function inventoryItem(): BelongsTo
+    {
+        return $this->belongsTo(InventoryItem::class, 'item_id')->withTrashed();
+    }
 }
