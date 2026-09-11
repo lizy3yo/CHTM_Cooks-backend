@@ -18,10 +18,17 @@ class WalkInTransactionItem extends Model
         'category',
         'quantity',
         'inspection_status',
+        'inspection_notes',
+        'replacement_quantity',
+        'due_date',
+        'additional_returned',
     ];
 
     protected $casts = [
         'quantity' => 'integer',
+        'replacement_quantity' => 'integer',
+        'additional_returned' => 'integer',
+        'due_date' => 'datetime',
     ];
 
     public function transaction(): BelongsTo

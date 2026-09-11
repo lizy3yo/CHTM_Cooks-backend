@@ -41,12 +41,28 @@ class WalkInTransactionController extends Controller
                 'quantity' => (int) $i->quantity,
                 'category' => $i->category ?? '',
                 'inspectionStatus' => $i->inspection_status,
+                // Inspection details (null until the item has been inspected).
+                'inspectionNotes' => $i->inspection_notes ?? null,
+                'replacementQuantity' => $i->replacement_quantity !== null ? (int) $i->replacement_quantity : null,
+                'dueDate' => $i->due_date ? $i->due_date->toIso8601String() : null,
+                'additionalReturned' => (int) ($i->additional_returned ?? 0),
             ])->values()->toArray(),
             'status' => $t->status,
             'returnedAt' => $t->returned_at ? $t->returned_at->toIso8601String() : null,
             'notes' => $t->notes,
+            'recordedBy' => $t->creator ? trim($t->creator->first_name . ' ' . $t->creator->last_name) : null,
             'createdAt' => $t->created_at->toIso8601String(),
         ];
+    }
+
+    /**
+     * Whether the inspection-detail columns exist yet. Lets returns keep working
+     * (status only) on a database that has not run the 2026_09_12 migration.
+     */
+    private function hasInspectionDetailColumns(): bool
+    {
+        static $has = null;
+        return $has ??= \Illuminate\Support\Facades\Schema::hasColumn('walk_in_transaction_items', 'inspection_notes');
     }
 
     private function generateReference(): string
@@ -67,7 +83,7 @@ class WalkInTransactionController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $query = WalkInTransaction::with('items')->orderBy('created_at', 'desc');
+        $query = WalkInTransaction::with(['items', 'creator'])->orderBy('created_at', 'desc');
 
         if ($request->filled('status') && in_array($request->status, ['borrowed', 'returned', 'missing'])) {
             $query->where('status', $request->status);
@@ -149,7 +165,7 @@ class WalkInTransactionController extends Controller
                     ]);
                 }
 
-                return $walkIn->load('items');
+                return $walkIn->load(['items', 'creator']);
             });
 
             return response()->json($this->transform($transaction), 201);
@@ -169,7 +185,7 @@ class WalkInTransactionController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $walkIn = WalkInTransaction::with('items')->where('reference', $reference)->first();
+        $walkIn = WalkInTransaction::with(['items', 'creator'])->where('reference', $reference)->first();
         if (!$walkIn) {
             return response()->json(['error' => 'Walk-in transaction not found'], 404);
         }
@@ -183,6 +199,11 @@ class WalkInTransactionController extends Controller
             'items' => 'nullable|array',
             'items.*.itemId' => 'nullable',
             'items.*.inspectionStatus' => 'nullable|in:good,damaged,missing',
+            // Same inspection details the student return checklist sends.
+            'items.*.notes' => 'nullable|string',
+            'items.*.replacementQuantity' => 'nullable|integer|min:0',
+            'items.*.dueDate' => 'nullable|date',
+            'items.*.additionalReturned' => 'nullable|integer|min:0',
         ]);
 
         if ($validator->fails()) {
@@ -198,6 +219,12 @@ class WalkInTransactionController extends Controller
                     $match = $inspections->first(fn($i) => (string) ($i['itemId'] ?? '') === (string) ($item->item_id ?? ''));
                     $status = $match['inspectionStatus'] ?? 'good';
                     $item->inspection_status = $status;
+                    if ($match && $this->hasInspectionDetailColumns()) {
+                        $item->inspection_notes = $match['notes'] ?? null;
+                        $item->replacement_quantity = $status !== 'good' ? ($match['replacementQuantity'] ?? null) : null;
+                        $item->due_date = !empty($match['dueDate']) ? Carbon::parse($match['dueDate']) : null;
+                        $item->additional_returned = (int) ($match['additionalReturned'] ?? 0);
+                    }
                     $item->save();
                     if ($status !== 'good') {
                         $hasIssue = true;
@@ -214,7 +241,7 @@ class WalkInTransactionController extends Controller
                 $walkIn->save();
             });
 
-            return response()->json($this->transform($walkIn->fresh('items')));
+            return response()->json($this->transform($walkIn->fresh(['items', 'creator'])));
         } catch (\Exception $e) {
             Log::error('Failed to process walk-in return: ' . $e->getMessage());
             return response()->json(['error' => 'Failed to process return'], 500);
