@@ -11,6 +11,7 @@ use App\Models\ReplacementObligation;
 use App\Models\Notification;
 use App\Models\User;
 use App\Services\NotificationService;
+use App\Services\AvailabilityService;
 use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
@@ -272,6 +273,33 @@ class BorrowRequestController extends Controller
         $class = ClassCode::with('instructors')->find($request->classCodeId);
         $instructorId = $class->instructors->first()?->id;
 
+        // Availability is judged against the booked day, not today's shelf count:
+        // units out on loan today may well be back by then, and units booked for
+        // that day are unavailable even while still on the shelf.
+        //
+        // Every line is checked before anything is written — bailing out midway
+        // would leave an empty pending request behind, which then blocks the
+        // student from submitting again.
+        $requestedIds = collect($request->items)->pluck('itemId')->map(fn ($id) => (int) $id)->all();
+        $inventory = InventoryItem::whereIn('id', $requestedIds)->get();
+        $bookedDate = Carbon::parse($request->borrowDate)->toDateString();
+        $availability = AvailabilityService::forDates($inventory, [$bookedDate]);
+
+        foreach ($request->items as $itemInput) {
+            $invItem = $inventory->firstWhere('id', (int) $itemInput['itemId']);
+            if (!$invItem) {
+                return response()->json(['error' => 'One of the requested items no longer exists.'], 400);
+            }
+
+            $available = $availability[(int) $itemInput['itemId']][$bookedDate]['free'] ?? 0;
+            if ($available < $itemInput['quantity'] && !$invItem->is_required) {
+                return response()->json([
+                    'error' => "Only {$available} × {$invItem->name} available on "
+                        . Carbon::parse($bookedDate)->format('M j') . "."
+                ], 400);
+            }
+        }
+
         $borrowRequest = BorrowRequest::create([
             'student_id' => $user->id,
             'instructor_id' => $instructorId,
@@ -286,14 +314,7 @@ class BorrowRequestController extends Controller
 
         // Create borrow request items
         foreach ($request->items as $itemInput) {
-            $invItem = InventoryItem::find($itemInput['itemId']);
-
-            // Check stock availability
-            $available = $invItem->quantity + $invItem->donations;
-            if ($available < $itemInput['quantity'] && !$invItem->is_required) {
-                // Return error if stock is insufficient and not a required item
-                return response()->json(['error' => "Insufficient stock for item: {$invItem->name}"], 400);
-            }
+            $invItem = $inventory->firstWhere('id', (int) $itemInput['itemId']);
 
             BorrowRequestItem::create([
                 'borrow_request_id' => $borrowRequest->id,
@@ -311,11 +332,99 @@ class BorrowRequestController extends Controller
         return response()->json($this->transformBorrowRequest($borrowRequest), 201);
     }
 
-    public function approve($id)
+    /**
+     * First item on the request that cannot be covered on its booked day.
+     * Returns a ready-to-show message, or null when everything fits.
+     *
+     * Required items are exempt — they are always issued regardless of stock.
+     */
+    private function findAvailabilityShortfall(BorrowRequest $req): ?string
     {
-        $req = BorrowRequest::find($id);
+        $date = Carbon::parse($req->borrow_date)->toDateString();
+        $itemIds = $req->items->pluck('item_id')->map(fn ($id) => (int) $id)->all();
+
+        if (empty($itemIds)) {
+            return null;
+        }
+
+        $inventory = InventoryItem::whereIn('id', $itemIds)->get();
+        // Exclude this request so it never counts against itself.
+        $availability = AvailabilityService::forDates($inventory, [$date], $req->id);
+
+        foreach ($req->items as $line) {
+            $invItem = $inventory->firstWhere('id', $line->item_id);
+            if (!$invItem || $invItem->is_required) {
+                continue;
+            }
+
+            $free = $availability[(int) $line->item_id][$date]['free'] ?? 0;
+
+            if ($free < $line->quantity) {
+                return "Only {$free} × {$line->name} still free on "
+                    . Carbon::parse($date)->format('M j')
+                    . ". Another approved request has taken the rest.";
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Per-item availability on this request's booked day, so an approver can see
+     * what they are about to commit before they commit it.
+     */
+    public function availability($id)
+    {
+        $req = BorrowRequest::with('items')->find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$req->borrow_date) {
+            return response()->json(['date' => null, 'items' => []]);
+        }
+
+        $date = Carbon::parse($req->borrow_date)->toDateString();
+        $itemIds = $req->items->pluck('item_id')->map(fn ($id) => (int) $id)->all();
+        $inventory = InventoryItem::whereIn('id', $itemIds)->get();
+
+        // Exclude this request so it does not count against itself.
+        $availability = AvailabilityService::forDates($inventory, [$date], $req->id);
+
+        return response()->json([
+            'date' => $date,
+            'items' => $req->items->map(function ($line) use ($availability, $date, $inventory) {
+                $figures = $availability[(int) $line->item_id][$date] ?? null;
+                $invItem = $inventory->firstWhere('id', $line->item_id);
+
+                return [
+                    'itemId' => (string) $line->item_id,
+                    'name' => $line->name,
+                    'requested' => (int) $line->quantity,
+                    'free' => $figures['free'] ?? 0,
+                    'owned' => $figures['owned'] ?? 0,
+                    'delayed' => $figures['delayed'] ?? 0,
+                    'isRequired' => (bool) ($invItem->is_required ?? false),
+                ];
+            })->values(),
+        ]);
+    }
+
+    public function approve($id)
+    {
+        $req = BorrowRequest::with('items')->find($id);
+        if (!$req) {
+            return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        // Pending requests hold no stock, so availability is settled here: the
+        // first approval for a given day takes the units, later ones are told
+        // there are none left.
+        if ($req->borrow_date) {
+            $shortfall = $this->findAvailabilityShortfall($req);
+            if ($shortfall) {
+                return response()->json(['error' => $shortfall], 409);
+            }
         }
 
         $user = auth()->user();

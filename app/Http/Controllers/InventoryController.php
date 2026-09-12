@@ -15,6 +15,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
 use DB;
 use App\Services\StorageService;
+use App\Services\AvailabilityService;
 
 class InventoryController extends Controller
 {
@@ -47,9 +48,10 @@ class InventoryController extends Controller
     /**
      * Transform Item to frontend representation
      * @param InventoryItem|\stdClass $item
+     * @param array|null $availability  date => figures, from AvailabilityService
      * @return array
      */
-    private function transformItem($item)
+    private function transformItem($item, ?array $availability = null)
     {
         $released = (int) \App\Models\BorrowRequestItem::where('item_id', $item->id)
             ->whereHas('borrowRequest', function ($q) {
@@ -80,9 +82,39 @@ class InventoryController extends Controller
             'isrequired' => (bool) $item->is_required,
             'maxQuantityPerRequest' => $item->max_quantity_per_request,
             'archived' => (bool) $item->archived,
+            // Per-date availability, present only when the caller asked for dates.
+            // `available` above is shelf stock right now and cannot answer
+            // "can this be borrowed on Thursday?".
+            'availability' => $availability,
             'createdAt' => $item->created_at->toIso8601String(),
             'updatedAt' => $item->updated_at->toIso8601String(),
         ];
+    }
+
+    /**
+     * Parse a `dates=YYYY-MM-DD,YYYY-MM-DD` parameter into validated days.
+     *
+     * @return string[]
+     */
+    private function requestedDates(Request $request): array
+    {
+        $raw = trim((string) $request->input('dates', ''));
+        if ($raw === '') {
+            return [];
+        }
+
+        $dates = [];
+        foreach (array_slice(explode(',', $raw), 0, 7) as $candidate) {
+            $candidate = trim($candidate);
+            try {
+                $dates[] = Carbon::parse($candidate)->toDateString();
+            } catch (\Exception $e) {
+                // Ignore unparseable days rather than failing the whole catalog.
+                continue;
+            }
+        }
+
+        return array_values(array_unique($dates));
     }
 
     /**
@@ -174,10 +206,14 @@ class InventoryController extends Controller
         // ── Categories (all active) ───────────────────────────────────────────
         $categories = InventoryCategory::where('archived', false)->orderBy('name')->get();
 
+        // ── Per-date availability (only when asked for) ───────────────────────
+        $dates = $this->requestedDates($request);
+        $availability = $dates ? AvailabilityService::forDates($items, $dates) : [];
+
         // ── Response ─────────────────────────────────────────────────────────
         return response()->json([
             'categories' => $categories->map(fn ($c) => $this->transformCategory($c))->values(),
-            'items'      => $items->map(fn ($i) => $this->transformItem($i))->values(),
+            'items'      => $items->map(fn ($i) => $this->transformItem($i, $availability[(int) $i->id] ?? null))->values(),
             'total'      => $totalItems,
             'page'       => $page,
             'limit'      => $limit,
@@ -187,6 +223,7 @@ class InventoryController extends Controller
                 'categoriesCount'     => $categories->count(),
                 'filteredItemsCount'  => $totalItems,
             ],
+            'dates'      => $dates,
             'meta'       => [
                 'userRole'  => $request->user()?->role,
                 'timestamp' => now()->toIso8601String(),
@@ -387,12 +424,17 @@ class InventoryController extends Controller
                        ->take($limit)
                        ->get();
 
+        // Per-date availability powers the date picker on the inventory pages.
+        $dates = $this->requestedDates($request);
+        $availability = $dates ? AvailabilityService::forDates($items, $dates) : [];
+
         return response()->json([
-            'items' => $items->map(fn($item) => $this->transformItem($item)),
+            'items' => $items->map(fn($item) => $this->transformItem($item, $availability[(int) $item->id] ?? null)),
             'total' => $total,
             'page' => $page,
             'limit' => $limit,
-            'pages' => $pages
+            'pages' => $pages,
+            'dates' => $dates
         ]);
     }
 

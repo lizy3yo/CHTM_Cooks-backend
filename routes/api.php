@@ -248,6 +248,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/borrow-requests/stream', [BorrowRequestController::class, 'stream']);
     Route::get('/borrow-requests/{id}', [BorrowRequestController::class, 'getById']);
     Route::post('/borrow-requests', [BorrowRequestController::class, 'create']);
+    Route::get('/borrow-requests/{id}/availability', [BorrowRequestController::class, 'availability']);
     Route::post('/borrow-requests/{id}/approve', [BorrowRequestController::class, 'approve']);
     Route::post('/borrow-requests/{id}/reject', [BorrowRequestController::class, 'reject']);
     Route::delete('/borrow-requests/{id}', [BorrowRequestController::class, 'cancel']);
