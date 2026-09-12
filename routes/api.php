@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\RealtimeController;
 use App\Http\Controllers\ClassCodeController;
 use App\Http\Controllers\BorrowRequestController;
 use App\Http\Controllers\DonationAndObligationController;
@@ -185,6 +186,10 @@ Route::prefix('auth')->group(function () {
 });
 
 Route::middleware('jwt.auth')->group(function () {
+    // Realtime: one multiplexed stream per client, instead of one per domain.
+    Route::get('/stream', [RealtimeController::class, 'stream']);
+    Route::get('/stream/signature', [RealtimeController::class, 'signature']);
+
     // Inventory Catalog (unified read-only endpoint for borrow flow)
     Route::get('/inventory/catalog', [InventoryController::class, 'getCatalog']);
 

@@ -146,8 +146,12 @@ class AvailabilityService
 
         foreach ($items as $item) {
             $id = (int) $item->id;
-            $owned = (int) ($item->quantity ?? 0)
-                + (int) ($item->donations ?? 0)
+
+            // Stock columns can go negative — pickup() decrements `donations`
+            // without a floor — and a negative count would subtract units that
+            // do not exist. Treat a deficit as zero rather than propagating it.
+            $owned = max(0, (int) ($item->quantity ?? 0))
+                + max(0, (int) ($item->donations ?? 0))
                 + ($out[$id] ?? 0);
 
             foreach ($dates as $date) {

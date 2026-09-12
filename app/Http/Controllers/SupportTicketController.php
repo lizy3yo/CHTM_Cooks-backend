@@ -12,6 +12,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
 use DB;
 use App\Services\AiChatService;
+use App\Services\ChangeSignatures;
+use App\Services\StreamService;
 
 class SupportTicketController extends Controller
 {
@@ -260,31 +262,10 @@ class SupportTicketController extends Controller
 
     public function stream()
     {
-        return new StreamedResponse(function () {
-            while (ob_get_level() > 0) {
-                ob_end_flush();
-            }
-
-            echo "retry: 15000\n";
-            echo "event: connected\n";
-            echo "data: {}\n\n";
-            flush();
-
-            $hasMultipleWorkers = function_exists('pcntl_fork') && getenv('PHP_CLI_SERVER_WORKERS') && intval(getenv('PHP_CLI_SERVER_WORKERS')) > 1;
-            if (php_sapi_name() !== 'cli-server' || $hasMultipleWorkers) {
-                // Heartbeat
-                $start = time();
-                while (time() - $start < 30) {
-                    echo ": keepalive\n\n";
-                    flush();
-                    sleep(10);
-                }
-            }
-        }, 200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache, no-store',
-            'Connection' => 'keep-alive',
-            'X-Accel-Buffering' => 'no',
-        ]);
+        // Fingerprints are polled inside the stream and pushed the moment
+        // they move; see StreamService for why the connection is short-lived.
+        return StreamService::respond([
+            'support_change' => [ChangeSignatures::class, 'supportTickets'],
+        ], auth()->user());
     }
 }
