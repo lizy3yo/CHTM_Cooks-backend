@@ -202,6 +202,7 @@ Route::middleware('jwt.auth')->group(function () {
     // Inventory Items
     Route::get('/inventory/items', [InventoryController::class, 'getItems']);
     Route::get('/inventory/items/{id}', [InventoryController::class, 'getItemById']);
+    Route::post('/inventory/items/{id}/reconcile-stock', [InventoryController::class, 'reconcileStock']);
     Route::post('/inventory/items', [InventoryController::class, 'createItem']);
     Route::post('/inventory/items/bulk', [InventoryController::class, 'bulkCreateItems']);
     Route::patch('/inventory/items/{id}', [InventoryController::class, 'updateItem']);

@@ -74,6 +74,8 @@ class InventoryController extends Controller
             'picture' => $item->picture,
             'quantity' => (int) $item->quantity,
             'donations' => (int) $item->donations,
+            // Units handed over that stock could not account for; awaiting reconciliation.
+            'stockDiscrepancy' => (int) ($item->stock_discrepancy ?? 0),
             'eomCount' => (int) $item->eom_count,
             'released' => $released,
             'available' => $available,
@@ -447,6 +449,64 @@ class InventoryController extends Controller
             'isDelta' => $isDelta,
             'syncedAt' => now()->toIso8601String()
         ]);
+    }
+
+    /**
+     * POST /api/inventory/items/{id}/reconcile-stock
+     *
+     * Clear a recorded shortfall once a custodian has physically counted the
+     * item. Optionally corrects the on-hand quantity at the same time, since a
+     * discrepancy usually means the recorded count was wrong to begin with.
+     */
+    public function reconcileStock(Request $request, $id)
+    {
+        $user = auth()->user();
+        if (!$user || !in_array($user->role, ['custodian', 'admin', 'superadmin'])) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'countedQuantity' => 'nullable|integer|min:0',
+            'notes' => 'nullable|string|max:1000',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['error' => 'Validation failed', 'details' => $validator->errors()], 400);
+        }
+
+        $item = InventoryItem::find($id);
+        if (!$item) {
+            return response()->json(['error' => 'Item not found'], 404);
+        }
+
+        $clearedShortfall = (int) ($item->stock_discrepancy ?? 0);
+        if ($clearedShortfall === 0) {
+            return response()->json(['error' => 'This item has no outstanding discrepancy.'], 400);
+        }
+
+        $previousQuantity = (int) $item->quantity;
+
+        if ($request->filled('countedQuantity')) {
+            $item->quantity = (int) $request->countedQuantity;
+        }
+
+        $item->stock_discrepancy = 0;
+        $item->save();
+
+        $this->logActivity(
+            'stock_reconciled',
+            'item',
+            $item->id,
+            $item->name,
+            [
+                'clearedShortfall' => $clearedShortfall,
+                'quantityBefore' => $previousQuantity,
+                'quantityAfter' => (int) $item->quantity,
+            ],
+            ['notes' => $request->input('notes')]
+        );
+
+        return response()->json($this->transformItem($item));
     }
 
     public function getItemById($id)

@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\BorrowRequest;
 use App\Models\BorrowRequestItem;
 use App\Models\InventoryItem;
+use App\Models\InventoryActivityLog;
 use App\Models\ClassCode;
 use App\Models\ReplacementObligation;
 use App\Models\Notification;
@@ -553,6 +554,41 @@ class BorrowRequestController extends Controller
         return response()->json($this->transformBorrowRequest($req));
     }
 
+    /**
+     * Record units handed over that the inventory count could not account for.
+     *
+     * Written to the activity log so the shortfall is auditable, and counted on
+     * the item so a custodian can see and clear it rather than having to notice
+     * a silently wrong total.
+     */
+    private function logStockDiscrepancy(InventoryItem $item, int $shortfall, BorrowRequest $req): void
+    {
+        $user = auth()->user();
+
+        InventoryActivityLog::create([
+            'action' => 'stock_discrepancy',
+            'entity_type' => 'item',
+            'entity_id' => $item->id,
+            'entity_name' => $item->name,
+            'user_id' => $user->id ?? null,
+            'user_name' => $user ? trim($user->first_name . ' ' . $user->last_name) : 'System',
+            'user_role' => $user->role ?? 'system',
+            'changes' => [
+                'shortfall' => $shortfall,
+                'quantityBefore' => (int) $item->getOriginal('quantity'),
+                'donationsBefore' => (int) $item->getOriginal('donations'),
+            ],
+            'metadata' => [
+                'reason' => 'Pickup exceeded recorded stock',
+                'borrowRequestId' => $item->id ? $req->id : null,
+                'requestCode' => 'REQ-' . strtoupper(substr((string) $req->id, -6)),
+            ],
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
+            'timestamp' => Carbon::now(),
+        ]);
+    }
+
     public function pickup($id)
     {
         $req = BorrowRequest::find($id);
@@ -566,15 +602,28 @@ class BorrowRequestController extends Controller
         foreach ($req->items as $borrowItem) {
             $invItem = InventoryItem::find($borrowItem->item_id);
             if ($invItem) {
-                // Deduct from quantity first, then donations
-                $qtyToDeduct = $borrowItem->quantity;
+                // Deduct from quantity first, then donations.
+                //
+                // Stock is a physical count and cannot go below zero. Handing
+                // over more than the records show means the records were wrong,
+                // not that negative stock exists — so the columns floor at zero
+                // and the unaccounted units are recorded as a discrepancy for a
+                // custodian to reconcile. Previously `donations` was decremented
+                // with no floor, which silently left items sitting at -1.
+                $qtyToDeduct = (int) $borrowItem->quantity;
 
-                if ($invItem->quantity >= $qtyToDeduct) {
-                    $invItem->decrement('quantity', $qtyToDeduct);
-                } else {
-                    $remainder = $qtyToDeduct - $invItem->quantity;
-                    $invItem->quantity = 0;
-                    $invItem->decrement('donations', $remainder);
+                $fromQuantity = min($qtyToDeduct, max(0, (int) $invItem->quantity));
+                $remainder = $qtyToDeduct - $fromQuantity;
+
+                $fromDonations = min($remainder, max(0, (int) $invItem->donations));
+                $shortfall = $remainder - $fromDonations;
+
+                $invItem->quantity = max(0, (int) $invItem->quantity) - $fromQuantity;
+                $invItem->donations = max(0, (int) $invItem->donations) - $fromDonations;
+
+                if ($shortfall > 0) {
+                    $invItem->stock_discrepancy = (int) $invItem->stock_discrepancy + $shortfall;
+                    $this->logStockDiscrepancy($invItem, $shortfall, $req);
                 }
 
                 $invItem->save();

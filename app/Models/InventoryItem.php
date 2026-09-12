@@ -21,6 +21,7 @@ class InventoryItem extends Model
         'picture',
         'quantity',
         'donations',
+        'stock_discrepancy',
         'eom_count',
         'description',
         'status',
@@ -35,6 +36,7 @@ class InventoryItem extends Model
     protected $casts = [
         'quantity' => 'integer',
         'donations' => 'integer',
+        'stock_discrepancy' => 'integer',
         'eom_count' => 'integer',
         'unit_price' => 'decimal:2',
         'is_required' => 'boolean',
