@@ -34,6 +34,7 @@ class BorrowRequest extends Model
         'last_reminder_at',
         'reminder_count',
         'returned_at',
+        'expired_at',
         'created_by',
         'updated_by'
     ];
@@ -52,6 +53,7 @@ class BorrowRequest extends Model
         'last_reminder_at' => 'datetime',
         'reminder_count' => 'integer',
         'returned_at' => 'datetime',
+        'expired_at' => 'datetime',
     ];
 
     public function student(): BelongsTo

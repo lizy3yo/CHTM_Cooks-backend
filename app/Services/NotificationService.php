@@ -21,7 +21,8 @@ class NotificationService
         'returned' => 'Returned',
         'cancelled' => 'Cancelled',
         'rejected' => 'Rejected',
-        'pending_appeal' => 'Appeal Submitted'
+        'pending_appeal' => 'Appeal Submitted',
+        'expired' => 'Expired — Not Picked Up'
     ];
 
     private static function getRolePath(string $role): string
@@ -51,6 +52,7 @@ class NotificationService
             case 'missing': return 'borrow_request_missing';
             case 'item_issue': return 'borrow_request_item_issue';
             case 'cancelled': return 'borrow_request_cancelled';
+            case 'expired': return 'borrow_request_expired';
             case 'reminder_sent': return 'borrow_request_reminder';
             case 'appealed': return 'borrow_request_appealed';
             default: return 'borrow_request_pending_review';
@@ -150,6 +152,19 @@ class NotificationService
                     'message' => "A student cancelled a pending request.",
                     'emailSummary' => "A pending request was cancelled by the student."
                 ];
+            case 'expired':
+                if ($role === 'student') {
+                    return [
+                        'title' => "Request expired ({$code})",
+                        'message' => "You did not pick up your items on your booked date. This request has been closed.",
+                        'emailSummary' => "Your reserved items were never collected, so this request has expired. You are free to submit a new request."
+                    ];
+                }
+                return [
+                    'title' => "Student did not collect ({$code})",
+                    'message' => "A request you approved expired because the student never picked up the items.",
+                    'emailSummary' => "This approved request expired without pickup. No items left the storeroom."
+                ];
             case 'reminder_sent':
                 return [
                     'title' => "Overdue reminder sent ({$code})",
@@ -214,7 +229,7 @@ class NotificationService
         }
 
         // Notify specific participants on terminal events
-        if (in_array($event, ['missing', 'item_issue', 'returned', 'picked_up'])) {
+        if (in_array($event, ['missing', 'item_issue', 'returned', 'picked_up', 'expired'])) {
             if ($request->instructor_id) {
                 $inst = User::where('id', $request->instructor_id)->where('is_active', true)->first();
                 if ($inst) {

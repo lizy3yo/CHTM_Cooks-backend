@@ -88,6 +88,7 @@ class BorrowRequestController extends Controller
             'releasedAt' => $req->released_at ? $req->released_at->toIso8601String() : null,
             'pickedUpAt' => $req->picked_up_at ? $req->picked_up_at->toIso8601String() : null,
             'returnedAt' => $req->returned_at ? $req->returned_at->toIso8601String() : null,
+            'expiredAt' => $req->expired_at ? $req->expired_at->toIso8601String() : null,
             'missingAt' => $req->missing_at ? $req->missing_at->toIso8601String() : null,
             'resolvedAt' => $req->resolved_at ? $req->resolved_at->toIso8601String() : null,
             'lastReminderAt' => $req->last_reminder_at ? $req->last_reminder_at->toIso8601String() : null,
@@ -111,8 +112,33 @@ class BorrowRequestController extends Controller
         ]);
     }
 
+    /**
+     * Close out requests whose booked day has fully passed without the student
+     * collecting. Stock is only deducted at pickup(), so nothing needs restoring
+     * here — the items never left the storeroom.
+     */
+    private function expireStaleRequests(): void
+    {
+        $stale = BorrowRequest::whereIn('status', ['approved_instructor', 'ready_for_pickup'])
+            ->whereNotNull('borrow_date')
+            ->whereDate('borrow_date', '<', Carbon::today())
+            ->with(['items', 'student'])
+            ->get();
+
+        foreach ($stale as $req) {
+            $req->status = 'expired';
+            $req->expired_at = Carbon::now();
+            $req->save();
+
+            NotificationService::notifyBorrowRequestLifecycle($req, 'expired');
+        }
+    }
+
     public function list(Request $request)
     {
+        // No scheduler runs in this project, so the sweep piggybacks on reads.
+        $this->expireStaleRequests();
+
         $query = BorrowRequest::query()->with(['student', 'instructor', 'custodian', 'items']);
 
         $user = auth()->user();
@@ -182,19 +208,40 @@ class BorrowRequestController extends Controller
 
     public function create(Request $request)
     {
+        // Bookings open tomorrow and close at the end of the day after tomorrow.
+        // The student form already enforces this window, but a stale page or a
+        // direct API call would otherwise slip past it.
+        $earliestBorrow = Carbon::today()->addDay()->toDateTimeString();
+        $latestBorrow = Carbon::today()->addDays(2)->endOfDay()->toDateTimeString();
+
         $validator = Validator::make($request->all(), [
             'classCodeId' => 'required|integer|exists:class_codes,id',
             'purpose' => 'required|string',
             'usageLocation' => 'nullable|string|in:school,outdoor',
-            'borrowDate' => 'required|date',
+            'borrowDate' => [
+                'required',
+                'date',
+                'after_or_equal:' . $earliestBorrow,
+                'before_or_equal:' . $latestBorrow,
+            ],
             'returnDate' => 'required|date|after:borrowDate',
             'items' => 'required|array',
             'items.*.itemId' => 'required|integer|exists:inventory_items,id',
             'items.*.quantity' => 'required|integer|min:1'
+        ], [
+            'borrowDate.after_or_equal' => 'Same-day requests are not allowed. Choose tomorrow or the day after.',
+            'borrowDate.before_or_equal' => 'Requests can only be booked up to 2 days ahead.',
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['error' => 'Validation failed', 'details' => $validator->errors()], 400);
+            // Surface the booking-window message directly — the client shows
+            // `error`, so a generic "Validation failed" would hide the reason.
+            $dateError = $validator->errors()->first('borrowDate');
+
+            return response()->json([
+                'error' => $dateError ?: 'Validation failed',
+                'details' => $validator->errors()
+            ], 400);
         }
 
         $user = auth()->user();
