@@ -12,6 +12,7 @@ use App\Models\Notification;
 use App\Models\User;
 use App\Services\NotificationService;
 use App\Services\AvailabilityService;
+use App\Services\DeltaQuery;
 use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
@@ -180,7 +181,10 @@ class BorrowRequestController extends Controller
             });
         }
 
-        $total = $query->count();
+        // `since` narrows this to rows the caller has not seen; `total` still
+        // describes the whole visible set so the client can detect deletions.
+        ['total' => $total, 'isDelta' => $isDelta] = DeltaQuery::apply($query, $request);
+
         $limit = $request->integer('limit', 20);
         $page = $request->integer('page', 1);
         $pages = max(1, ceil($total / $limit));
@@ -196,7 +200,9 @@ class BorrowRequestController extends Controller
             'total' => $total,
             'page' => $page,
             'limit' => $limit,
-            'pages' => $pages
+            'pages' => $pages,
+            'isDelta' => $isDelta,
+            'syncedAt' => now()->toIso8601String()
         ]);
     }
 

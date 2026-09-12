@@ -16,6 +16,7 @@ use Carbon\Carbon;
 use DB;
 use App\Services\StorageService;
 use App\Services\AvailabilityService;
+use App\Services\DeltaQuery;
 use App\Services\ChangeSignatures;
 use App\Services\StreamService;
 
@@ -202,7 +203,9 @@ class InventoryController extends Controller
             default        => $query->orderBy('name'),
         };
 
-        $totalItems = $query->count();
+        // Same contract as getItems: total covers everything, `since` narrows rows.
+        ['total' => $totalItems, 'isDelta' => $isDelta] = DeltaQuery::apply($query, $request);
+
         $items = $query->skip(($page - 1) * $limit)->take($limit)->get();
 
         // ── Categories (all active) ───────────────────────────────────────────
@@ -226,6 +229,8 @@ class InventoryController extends Controller
                 'filteredItemsCount'  => $totalItems,
             ],
             'dates'      => $dates,
+            'isDelta'    => $isDelta,
+            'syncedAt'   => now()->toIso8601String(),
             'meta'       => [
                 'userRole'  => $request->user()?->role,
                 'timestamp' => now()->toIso8601String(),
@@ -416,7 +421,9 @@ class InventoryController extends Controller
             });
         }
 
-        $total = $query->count();
+        // `since` narrows this to rows the caller has not seen; `total` still
+        // describes the whole visible set so the client can detect deletions.
+        ['total' => $total, 'isDelta' => $isDelta] = DeltaQuery::apply($query, $request);
         $limit = $request->integer('limit', 10);
         $page = $request->integer('page', 1);
         $pages = max(1, ceil($total / $limit));
@@ -436,7 +443,9 @@ class InventoryController extends Controller
             'page' => $page,
             'limit' => $limit,
             'pages' => $pages,
-            'dates' => $dates
+            'dates' => $dates,
+            'isDelta' => $isDelta,
+            'syncedAt' => now()->toIso8601String()
         ]);
     }
 
