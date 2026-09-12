@@ -526,7 +526,7 @@ class StudentStatisticsService
                 'title' => 'Resolve outstanding obligations',
                 'description' => "You have {$replacement['pendingCount']} pending obligation(s) with {$replacement['balance']} outstanding balance.",
                 'actionLabel' => 'Review obligations',
-                'href' => '/student/borrowed'
+                'href' => '/student/requests?tab=unresolved'
             ];
         }
 
