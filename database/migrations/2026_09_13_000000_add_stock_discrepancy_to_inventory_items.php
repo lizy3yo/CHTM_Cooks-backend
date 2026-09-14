@@ -19,20 +19,23 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('inventory_items', function (Blueprint $table) {
-            $table->integer('stock_discrepancy')
-                ->default(0)
-                ->after('donations')
-                ->comment('Units handed over that stock could not account for; awaiting reconciliation');
-        });
+        if (!Schema::hasColumn('inventory_items', 'stock_discrepancy')) {
+            Schema::table('inventory_items', function (Blueprint $table) {
+                $table->integer('stock_discrepancy')
+                    ->default(0)
+                    ->after('donations')
+                    ->comment('Units handed over that stock could not account for; awaiting reconciliation');
+            });
+        }
 
         // Carry existing negative balances over as discrepancies, then floor the
         // counts. A -1 means one unit left the storeroom unaccounted for, which
-        // is precisely what this column is meant to hold.
+        // is precisely what this column is meant to hold. CASE rather than
+        // GREATEST() keeps this portable to SQLite.
         DB::statement('UPDATE inventory_items
             SET stock_discrepancy = stock_discrepancy
-                + GREATEST(0, -quantity)
-                + GREATEST(0, -donations)
+                + CASE WHEN quantity < 0 THEN -quantity ELSE 0 END
+                + CASE WHEN donations < 0 THEN -donations ELSE 0 END
             WHERE quantity < 0 OR donations < 0');
 
         DB::statement('UPDATE inventory_items SET quantity = 0 WHERE quantity < 0');

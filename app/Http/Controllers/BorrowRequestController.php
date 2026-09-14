@@ -142,7 +142,13 @@ class BorrowRequestController extends Controller
     public function list(Request $request)
     {
         // No scheduler runs in this project, so the sweep piggybacks on reads.
-        $this->expireStaleRequests();
+        // It is housekeeping: a failure is reported but must never block the
+        // list itself, which every role depends on.
+        try {
+            $this->expireStaleRequests();
+        } catch (\Throwable $e) {
+            report($e);
+        }
 
         $query = BorrowRequest::query()->with(['student', 'instructor', 'custodian', 'items']);
 
