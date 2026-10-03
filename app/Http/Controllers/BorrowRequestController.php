@@ -95,6 +95,8 @@ class BorrowRequestController extends Controller
             'pickedUpAt' => $req->picked_up_at ? $req->picked_up_at->toIso8601String() : null,
             'returnedAt' => $req->returned_at ? $req->returned_at->toIso8601String() : null,
             'expiredAt' => $req->expired_at ? $req->expired_at->toIso8601String() : null,
+            'cancelledAt' => $req->cancelled_at ? $req->cancelled_at->toIso8601String() : null,
+            'cancelledBy' => $this->transformUserSummary($req->canceller),
             'missingAt' => $req->missing_at ? $req->missing_at->toIso8601String() : null,
             'resolvedAt' => $req->resolved_at ? $req->resolved_at->toIso8601String() : null,
             'lastReminderAt' => $req->last_reminder_at ? $req->last_reminder_at->toIso8601String() : null,
@@ -190,7 +192,7 @@ class BorrowRequestController extends Controller
             report($e);
         }
 
-        $query = BorrowRequest::query()->with(['student', 'instructor', 'custodian', 'items']);
+        $query = BorrowRequest::query()->with(['student', 'instructor', 'custodian', 'canceller', 'items']);
 
         $user = auth()->user();
 
@@ -255,7 +257,7 @@ class BorrowRequestController extends Controller
 
     public function getById($id)
     {
-        $req = BorrowRequest::with(['student', 'instructor', 'custodian', 'items'])->find($id);
+        $req = BorrowRequest::with(['student', 'instructor', 'custodian', 'canceller', 'items'])->find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
@@ -556,6 +558,8 @@ class BorrowRequestController extends Controller
         $user = auth()->user();
 
         $req->status = 'cancelled';
+        $req->cancelled_at = Carbon::now();
+        $req->cancelled_by = $user->id;
         $req->updated_by = $user->id;
         $req->save();
 

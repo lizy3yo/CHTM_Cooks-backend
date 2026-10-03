@@ -221,7 +221,32 @@ class OperationsDashboardTest extends TestCase
         $this->assertSame('pending_instructor', $req->fresh()->status);
 
         $this->getJson("/api/borrow-requests/{$req->id}", $this->auth($this->student))->assertStatus(200);
-        $this->deleteJson("/api/borrow-requests/{$req->id}", $this->encrypt([]), $this->auth($this->student))->assertStatus(200);
+        $response = $this->deleteJson("/api/borrow-requests/{$req->id}", $this->encrypt([]), $this->auth($this->student));
+        $response->assertStatus(200);
         $this->assertSame('cancelled', $req->fresh()->status);
+    }
+
+    public function test_cancellation_records_when_and_who(): void
+    {
+        $req = $this->request('approved_instructor');
+        $superadmin = $this->user('superadmin');
+
+        Carbon::setTestNow('2026-10-03 09:30:00');
+        $response = $this->deleteJson("/api/borrow-requests/{$req->id}", $this->encrypt([]), $this->auth($superadmin));
+        Carbon::setTestNow();
+
+        $response->assertStatus(200);
+        $fresh = $req->fresh();
+        $this->assertSame('2026-10-03 09:30:00', $fresh->cancelled_at->format('Y-m-d H:i:s'));
+        $this->assertSame((string) $superadmin->id, (string) $fresh->cancelled_by);
+
+        $data = $this->decrypt($response);
+        $this->assertNotNull($data['cancelledAt']);
+        $this->assertSame((string) $superadmin->id, $data['cancelledBy']['id']);
+
+        // Never-cancelled requests expose nulls rather than omitting the fields.
+        $other = $this->decrypt($this->getJson("/api/borrow-requests/{$this->request('pending_instructor')->id}", $this->auth($this->student)));
+        $this->assertNull($other['cancelledAt']);
+        $this->assertNull($other['cancelledBy']);
     }
 }

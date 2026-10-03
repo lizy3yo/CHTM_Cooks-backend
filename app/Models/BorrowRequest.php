@@ -37,6 +37,8 @@ class BorrowRequest extends Model
         'reminder_count',
         'returned_at',
         'expired_at',
+        'cancelled_at',
+        'cancelled_by',
         'created_by',
         'updated_by'
     ];
@@ -56,6 +58,7 @@ class BorrowRequest extends Model
         'reminder_count' => 'integer',
         'returned_at' => 'datetime',
         'expired_at' => 'datetime',
+        'cancelled_at' => 'datetime',
     ];
 
     public function student(): BelongsTo
@@ -71,6 +74,12 @@ class BorrowRequest extends Model
     public function custodian(): BelongsTo
     {
         return $this->belongsTo(User::class, 'custodian_id');
+    }
+
+    /** Who cancelled the request: the student, or a superadmin override. */
+    public function canceller(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'cancelled_by');
     }
 
     public function classCode(): BelongsTo
