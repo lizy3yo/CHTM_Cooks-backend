@@ -13,6 +13,7 @@ use App\Models\InventoryItem;
 use App\Models\InventoryActivityLog;
 use App\Models\WalkInTransaction;
 use App\Services\StudentStatisticsService;
+use App\Services\StudentIncidents;
 use Carbon\Carbon;
 use DB;
 use Illuminate\Support\Facades\Log;
@@ -405,7 +406,8 @@ class AnalyticsReportController extends Controller
             });
         }
 
-        $obligations = $query->get();
+        // Newest first: the tracking list below shows the latest 30, not the oldest.
+        $obligations = $query->orderByDesc('incident_date')->get();
 
         $todayStart = Carbon::today();
         $last7DaysStart = Carbon::now()->subDays(7)->startOfDay();
@@ -911,19 +913,38 @@ class AnalyticsReportController extends Controller
 
     private function buildHighIncidentStudents(Carbon $start, Carbon $end, array $filters = []): array
     {
-        $query = ReplacementObligation::whereBetween('incident_date', [$start, $end])
-            ->with('student');
+        $query = ReplacementObligation::whereBetween('incident_date', [$start, $end]);
         if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
         if (!empty($filters['class_code_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('class_code_id', $filters['class_code_id']));
         if (!empty($filters['instructor_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('instructor_id', $filters['instructor_id']));
         if (!empty($filters['custodian_id'])) $query->whereHas('borrowRequest', fn($q) => $q->whereIn('custodian_id', $filters['custodian_id']));
-        
-        return $query->get()
-            ->groupBy('student_id')
-            ->map(function ($group) {
-                $student = $group->first()->student;
+
+        $incidents = $query->get(['student_id', 'type'])
+            ->map(fn($o) => ['studentId' => (string) $o->student_id, 'type' => $o->type]);
+
+        // Walk-in damage counts toward a student's record too. Walk-ins have no
+        // instructor or custodian, so those filters exclude them entirely.
+        if (empty($filters['instructor_id']) && empty($filters['custodian_id'])) {
+            $studentIds = !empty($filters['student_id']) ? array_map('intval', $filters['student_id']) : null;
+            if (!empty($filters['class_code_id'])) {
+                $enrolled = StudentIncidents::studentIdsForClasses($filters['class_code_id']);
+                $studentIds = $studentIds === null ? $enrolled : array_values(array_intersect($studentIds, $enrolled));
+            }
+            $incidents = $incidents->concat(StudentIncidents::collect([
+                'from' => $start,
+                'to' => $end,
+                'studentIds' => $studentIds,
+                'includeRequests' => false,
+            ])->map(fn($i) => ['studentId' => $i['studentId'], 'type' => $i['type']]));
+        }
+
+        $students = User::whereIn('id', $incidents->pluck('studentId')->unique())->get()->keyBy('id');
+
+        return $incidents->groupBy('studentId')
+            ->map(function ($group, $studentId) use ($students) {
+                $student = $students->get($studentId);
                 return [
-                    '_id' => (string) $group->first()->student_id,
+                    '_id' => (string) $studentId,
                     'studentName' => $student ? ($student->first_name . ' ' . $student->last_name) : 'Unknown Student',
                     'studentEmail' => $student ? $student->email : 'N/A',
                     'profilePhotoUrl' => $student ? $student->profile_photo_url : null,

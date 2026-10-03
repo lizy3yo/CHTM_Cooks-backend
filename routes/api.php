@@ -16,6 +16,7 @@ use App\Http\Controllers\AiChatController;
 use App\Http\Controllers\CartController;
 use App\Http\Controllers\WalkInTransactionController;
 use App\Http\Controllers\OperationsDashboardController;
+use App\Http\Controllers\StudentIncidentReportController;
 
 use Illuminate\Support\Facades\Artisan;
 
@@ -190,6 +191,8 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/reports/analytics/stream', [AnalyticsReportController::class, 'stream']);
     Route::get('/reports/analytics/signature', [AnalyticsReportController::class, 'signature']);
     Route::get('/reports/analytics/export', [AnalyticsReportController::class, 'export']);
+    Route::get('/reports/student-incidents', [StudentIncidentReportController::class, 'index']);
+    Route::get('/reports/student-incidents/{studentId}', [StudentIncidentReportController::class, 'show']);
 
     // Users
     Route::get('/users', [UserController::class, 'getAll']);
