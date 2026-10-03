@@ -226,6 +226,22 @@ class OperationsDashboardTest extends TestCase
         $this->assertSame('cancelled', $req->fresh()->status);
     }
 
+    public function test_report_item_entries_have_unique_ids_when_a_request_repeats_an_item(): void
+    {
+        $req = $this->request('borrowed');
+        // Same item listed twice in one request (the API does not forbid it).
+        DB::table('borrow_request_items')->insert([
+            'borrow_request_id' => $req->id, 'item_id' => $this->itemId,
+            'name' => 'Chef Knife', 'quantity' => 1, 'category' => 'Knives',
+        ]);
+
+        $data = $this->decrypt($this->getJson('/api/reports/analytics?period=month', $this->auth($this->user('admin'))));
+        $ids = array_column($data['borrowRequests']['itemEntries'], 'id');
+
+        $this->assertCount(2, $ids);
+        $this->assertSame($ids, array_unique($ids));
+    }
+
     public function test_cancellation_records_when_and_who(): void
     {
         $req = $this->request('approved_instructor');

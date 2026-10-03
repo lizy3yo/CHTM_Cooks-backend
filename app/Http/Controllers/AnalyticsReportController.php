@@ -332,7 +332,9 @@ class AnalyticsReportController extends Controller
         foreach ($requests as $r) {
             foreach ($r->items as $item) {
                 $itemEntries[] = [
-                    'id' => $r->id . ':' . $item->item_id,
+                    // The row id, not item_id: one request can list the same item twice,
+                    // and a duplicate id breaks every keyed list that shows these entries.
+                    'id' => $r->id . ':' . $item->id,
                     'requestId' => (string) $r->id,
                     'requestDate' => $r->created_at->toIso8601String(),
                     'requestStatus' => $r->status,
