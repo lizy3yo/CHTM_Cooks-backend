@@ -19,37 +19,6 @@ use App\Http\Controllers\OperationsDashboardController;
 
 use Illuminate\Support\Facades\Artisan;
 
-// Route to trigger migrations and seeding from the browser (Render Free Tier)
-Route::get('/run-db-seed', function () {
-    try {
-        $output = "<h2>Running Database Setup & Seeding...</h2>";
-
-        Artisan::call('migrate', ['--force' => true]);
-        $output .= "<h3>Migrations Output:</h3><pre>" . Artisan::output() . "</pre>";
-
-        Artisan::call('db:seed', ['--force' => true]);
-        $output .= "<h3>Seeder Output:</h3><pre>" . Artisan::output() . "</pre>";
-
-        $output .= "<h3 style='color: green;'>Database migration and seeding completed successfully!</h3>";
-
-        return response($output, 200)->header('Content-Type', 'text/html');
-    } catch (\Throwable $e) {
-        return response("<h2>Error occurred:</h2><pre>" . $e->getMessage() . "</pre>", 500)
-            ->header('Content-Type', 'text/html');
-    }
-});
-
-Route::get('/seed', function () {
-    try {
-        Artisan::call('db:seed', ['--force' => true]);
-        return response("<h2>Database Seeded Successfully!</h2><pre>" . Artisan::output() . "</pre>", 200)
-            ->header('Content-Type', 'text/html');
-    } catch (\Throwable $e) {
-        return response("<h2>Error during seeding:</h2><pre>" . $e->getMessage() . "</pre>", 500)
-            ->header('Content-Type', 'text/html');
-    }
-});
-
 // Secure route to seed demo data (classes, students, requests, donations, walk-ins)
 // Usage: /api/seed-demo?token=chtm_secure_seed_2026  (safe to rerun, never duplicates)
 Route::get('/seed-demo', function () {
