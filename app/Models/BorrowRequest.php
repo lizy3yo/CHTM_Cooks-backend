@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -79,5 +81,21 @@ class BorrowRequest extends Model
     public function items(): HasMany
     {
         return $this->hasMany(BorrowRequestItem::class, 'borrow_request_id');
+    }
+
+    /**
+     * Statuses in which the items are physically out of the storeroom: still
+     * with the student, or handed back but not yet checked in by a custodian.
+     */
+    public const OUT_STATUSES = ['borrowed', 'pending_return'];
+
+    /**
+     * The single definition of "overdue" used by every dashboard and report:
+     * items still out and the agreed return date has passed.
+     */
+    public function scopeOverdue(Builder $query, ?Carbon $now = null): Builder
+    {
+        return $query->whereIn('status', self::OUT_STATUSES)
+            ->where('return_date', '<', $now ?? Carbon::now());
     }
 }

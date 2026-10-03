@@ -204,13 +204,10 @@ class AnalyticsReportController extends Controller
     private function getBorrowRequestsReport(Carbon $start, Carbon $end, Carbon $now, \Illuminate\Database\Eloquent\Collection $requests): array
     {
         // Overdue count & list
-        $overdueCount = BorrowRequest::where('status', 'borrowed')
-            ->where('return_date', '<', $now)
-            ->count();
+        $overdueCount = BorrowRequest::overdue($now)->count();
 
-        $overdueList = BorrowRequest::with('student')
-            ->where('status', 'borrowed')
-            ->where('return_date', '<', $now)
+        $overdueList = BorrowRequest::with(['student', 'items'])
+            ->overdue($now)
             ->orderBy('return_date', 'asc')
             ->limit(20)
             ->get();
@@ -590,7 +587,8 @@ class AnalyticsReportController extends Controller
     private function buildItemsCurrentlyOut(array $filters = []): array
     {
         $outItemsMap = [];
-        $query = BorrowRequest::with('items')->where('status', 'borrowed');
+        // pending_return items are still physically out until a custodian checks them in.
+        $query = BorrowRequest::with('items')->whereIn('status', BorrowRequest::OUT_STATUSES);
         if (!empty($filters['class_code_id'])) $query->whereIn('class_code_id', $filters['class_code_id']);
         if (!empty($filters['instructor_id'])) $query->whereIn('instructor_id', $filters['instructor_id']);
         if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
@@ -938,8 +936,7 @@ class AnalyticsReportController extends Controller
 
     private function buildOverdueStudents(Carbon $now, array $filters = []): array
     {
-        $query = BorrowRequest::where('status', 'borrowed')
-            ->where('return_date', '<', $now)
+        $query = BorrowRequest::overdue($now)
             ->with('student');
         if (!empty($filters['student_id'])) $query->whereIn('student_id', $filters['student_id']);
         if (!empty($filters['class_code_id'])) $query->whereIn('class_code_id', $filters['class_code_id']);

@@ -13,6 +13,7 @@ use App\Models\Notification;
 use App\Models\User;
 use App\Services\NotificationService;
 use App\Services\AvailabilityService;
+use App\Services\BorrowRequestExpiry;
 use App\Services\DeltaQuery;
 use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -103,6 +104,67 @@ class BorrowRequestController extends Controller
         ];
     }
 
+    /** Roles that run the storeroom: release, pickup, check-in, inspection. */
+    private const STAFF_ROLES = ['custodian', 'admin', 'superadmin'];
+
+    private function forbidden()
+    {
+        return response()->json(['error' => 'You do not have permission to perform this action.'], 403);
+    }
+
+    private function isOwner($user, BorrowRequest $req): bool
+    {
+        return $user->role === 'student' && (string) $req->student_id === (string) $user->id;
+    }
+
+    private function isStaff($user, BorrowRequest $req): bool
+    {
+        return in_array($user->role, self::STAFF_ROLES, true);
+    }
+
+    /** The assigned instructor, or any instructor teaching the request's class. */
+    private function isResponsibleInstructor($user, BorrowRequest $req): bool
+    {
+        if ($user->role !== 'instructor') {
+            return false;
+        }
+        if ((string) $req->instructor_id === (string) $user->id) {
+            return true;
+        }
+        return DB::table('class_code_instructor')
+            ->where('user_id', $user->id)
+            ->where('class_code_id', $req->class_code_id)
+            ->exists();
+    }
+
+    /** Same visibility rules as list(): students see their own, instructors their classes. */
+    private function canView($user, BorrowRequest $req): bool
+    {
+        if ($user->role === 'student') {
+            return $this->isOwner($user, $req);
+        }
+        if ($user->role === 'instructor') {
+            return $this->isResponsibleInstructor($user, $req);
+        }
+        return $this->isStaff($user, $req);
+    }
+
+    /** Approving or declining is the instructor's decision; superadmin may override. */
+    private function canReview($user, BorrowRequest $req): bool
+    {
+        return $user->role === 'superadmin' || $this->isResponsibleInstructor($user, $req);
+    }
+
+    private function canCancel($user, BorrowRequest $req): bool
+    {
+        return $user->role === 'superadmin' || $this->isOwner($user, $req);
+    }
+
+    private function canReturn($user, BorrowRequest $req): bool
+    {
+        return $this->isOwner($user, $req) || $this->isStaff($user, $req);
+    }
+
     private function createNotification($userId, $role, $type, $title, $message, $requestId = null, $metadata = null)
     {
         Notification::create([
@@ -117,35 +179,13 @@ class BorrowRequestController extends Controller
         ]);
     }
 
-    /**
-     * Close out requests whose booked day has fully passed without the student
-     * collecting. Stock is only deducted at pickup(), so nothing needs restoring
-     * here — the items never left the storeroom.
-     */
-    private function expireStaleRequests(): void
-    {
-        $stale = BorrowRequest::whereIn('status', ['approved_instructor', 'ready_for_pickup'])
-            ->whereNotNull('borrow_date')
-            ->whereDate('borrow_date', '<', Carbon::today())
-            ->with(['items', 'student'])
-            ->get();
-
-        foreach ($stale as $req) {
-            $req->status = 'expired';
-            $req->expired_at = Carbon::now();
-            $req->save();
-
-            NotificationService::notifyBorrowRequestLifecycle($req, 'expired');
-        }
-    }
-
     public function list(Request $request)
     {
         // No scheduler runs in this project, so the sweep piggybacks on reads.
         // It is housekeeping: a failure is reported but must never block the
         // list itself, which every role depends on.
         try {
-            $this->expireStaleRequests();
+            BorrowRequestExpiry::sweep();
         } catch (\Throwable $e) {
             report($e);
         }
@@ -218,6 +258,10 @@ class BorrowRequestController extends Controller
         $req = BorrowRequest::with(['student', 'instructor', 'custodian', 'items'])->find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$this->canView(auth()->user(), $req)) {
+            return $this->forbidden();
         }
         return response()->json($this->transformBorrowRequest($req));
     }
@@ -395,6 +439,10 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
 
+        if (!$this->canView(auth()->user(), $req)) {
+            return $this->forbidden();
+        }
+
         if (!$req->borrow_date) {
             return response()->json(['date' => null, 'items' => []]);
         }
@@ -432,6 +480,10 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
 
+        if (!$this->canReview(auth()->user(), $req)) {
+            return $this->forbidden();
+        }
+
         // Pending requests hold no stock, so availability is settled here: the
         // first approval for a given day takes the units, later ones are told
         // there are none left.
@@ -460,6 +512,10 @@ class BorrowRequestController extends Controller
         $req = BorrowRequest::find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$this->canReview(auth()->user(), $req)) {
+            return $this->forbidden();
         }
 
         $validator = Validator::make($request->all(), [
@@ -493,6 +549,10 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
 
+        if (!$this->canCancel(auth()->user(), $req)) {
+            return $this->forbidden();
+        }
+
         $user = auth()->user();
 
         $req->status = 'cancelled';
@@ -509,6 +569,10 @@ class BorrowRequestController extends Controller
         $req = BorrowRequest::find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$this->isOwner(auth()->user(), $req)) {
+            return $this->forbidden();
         }
 
         $validator = Validator::make($request->all(), [
@@ -544,6 +608,10 @@ class BorrowRequestController extends Controller
         $req = BorrowRequest::find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$this->isStaff(auth()->user(), $req)) {
+            return $this->forbidden();
         }
 
         $user = auth()->user();
@@ -602,6 +670,10 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
 
+        if (!$this->isStaff(auth()->user(), $req)) {
+            return $this->forbidden();
+        }
+
         $user = auth()->user();
 
         // Adjust stocks in inventory
@@ -654,6 +726,10 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
 
+        if (!$this->canReturn(auth()->user(), $req)) {
+            return $this->forbidden();
+        }
+
         $user = auth()->user();
 
         $req->status = 'pending_return';
@@ -672,6 +748,10 @@ class BorrowRequestController extends Controller
         $req = BorrowRequest::find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$this->isStaff(auth()->user(), $req)) {
+            return $this->forbidden();
         }
 
         $user = auth()->user();
@@ -715,6 +795,10 @@ class BorrowRequestController extends Controller
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
 
+        if (!$this->isStaff(auth()->user(), $req)) {
+            return $this->forbidden();
+        }
+
         $user = auth()->user();
 
         $req->last_reminder_at = Carbon::now();
@@ -736,6 +820,10 @@ class BorrowRequestController extends Controller
         $req = BorrowRequest::find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$this->isStaff(auth()->user(), $req)) {
+            return $this->forbidden();
         }
 
         $validator = Validator::make($request->all(), [
