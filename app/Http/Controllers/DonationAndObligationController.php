@@ -4,16 +4,19 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\Donation;
+use Illuminate\Support\Facades\Schema;
 use App\Models\ReplacementObligation;
 use App\Models\InventoryItem;
 use App\Models\InventoryCategory;
 use App\Models\BorrowRequest;
+use App\Models\BorrowRequestEvent;
 use App\Models\User;
 use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
 use DB;
 use App\Services\ChangeSignatures;
+use App\Services\InventoryVariance;
 use App\Services\StreamService;
 
 class DonationAndObligationController extends Controller
@@ -44,6 +47,13 @@ class DonationAndObligationController extends Controller
             'picture' => $donation->item?->picture,
             // Staff member who logged the donation (shown in the details window).
             'recordedBy' => $donation->creator ? trim($donation->creator->first_name . ' ' . $donation->creator->last_name) : null,
+            // Declared value: the cost of one unit, and of the whole donation.
+            'unitCost' => $donation->unit_cost !== null ? (float) $donation->unit_cost : null,
+            'totalValue' => $donation->unit_cost !== null ? round((float) $donation->unit_cost * (int) $donation->quantity, 2) : null,
+            // Deed of donation: pending until the signed copy is uploaded.
+            'deedStatus' => $donation->deed_status ?? 'pending',
+            'deedFileUrl' => $donation->deed_file_url,
+            'deedSignedAt' => $donation->deed_signed_at ? $donation->deed_signed_at->toIso8601String() : null,
             'createdAt' => $donation->created_at->toIso8601String(),
             'updatedAt' => $donation->updated_at->toIso8601String(),
         ];
@@ -103,6 +113,7 @@ class DonationAndObligationController extends Controller
             'purpose' => 'required|string',
             'date' => 'required|date',
             'notes' => 'nullable|string',
+            'unitCost' => 'nullable|numeric|min:0|max:9999999999',
             
             // Required if new_item
             'itemName' => 'required_if:inventoryAction,new_item|string|max:255',
@@ -141,8 +152,11 @@ class DonationAndObligationController extends Controller
                 'tools_or_equipment' => $request->toolsOrEquipment ?? '',
                 'picture' => $request->picture ?? null,
                 'quantity' => 0,
+                'unit_price' => $request->unitCost,
                 'donations' => $request->quantity,
-                'eom_count' => $request->quantity,
+                // Donated stock is new this month, so it does not raise the
+                // starting count: it shows as Over until the month is closed.
+                'eom_count' => InventoryVariance::available() ? 0 : $request->quantity,
                 'created_by' => $user->id,
             ]);
 
@@ -156,8 +170,10 @@ class DonationAndObligationController extends Controller
             // Add quantity to existing inventory item
             $invItem = InventoryItem::find($request->inventoryItemId);
             $invItem->increment('donations', $request->quantity);
-            $invItem->eom_count += $request->quantity;
-            $invItem->save();
+            if (!InventoryVariance::available()) {
+                $invItem->eom_count += $request->quantity;
+                $invItem->save();
+            }
 
             $inventoryItemId = $invItem->id;
             $itemName = $invItem->name;
@@ -175,7 +191,7 @@ class DonationAndObligationController extends Controller
             'inventory_action' => $request->inventoryAction,
             'inventory_item_id' => $inventoryItemId,
             'created_by' => $user->id,
-        ]);
+        ] + (self::tracksDonationValue() ? ['unit_cost' => $request->unitCost] : []));
 
         return response()->json($this->transformDonation($donation), 201);
     }
@@ -210,8 +226,10 @@ class DonationAndObligationController extends Controller
             $invItem = InventoryItem::find($donation->inventory_item_id);
             if ($invItem) {
                 $invItem->increment('donations', $qtyToAdd);
-                $invItem->eom_count += $qtyToAdd;
-                $invItem->save();
+                if (!InventoryVariance::available()) {
+                    $invItem->eom_count += $qtyToAdd;
+                    $invItem->save();
+                }
             }
         }
 
@@ -230,7 +248,8 @@ class DonationAndObligationController extends Controller
             'purpose' => 'sometimes|required|string',
             'date' => 'sometimes|required|date',
             'notes' => 'nullable|string',
-            'quantity' => 'sometimes|required|integer|min:1'
+            'quantity' => 'sometimes|required|integer|min:1',
+            'unitCost' => 'nullable|numeric|min:0|max:9999999999'
         ]);
 
         if ($validator->fails()) {
@@ -245,6 +264,7 @@ class DonationAndObligationController extends Controller
         if ($request->has('date')) $updateData['date'] = Carbon::parse($request->date);
         if ($request->has('notes')) $updateData['notes'] = $request->notes;
         if ($request->has('quantity')) $updateData['quantity'] = $request->quantity;
+        if ($request->has('unitCost') && self::tracksDonationValue()) $updateData['unit_cost'] = $request->unitCost;
 
         $donation->update($updateData);
 
@@ -255,8 +275,10 @@ class DonationAndObligationController extends Controller
                 $invItem = InventoryItem::find($donation->inventory_item_id);
                 if ($invItem) {
                     $invItem->increment('donations', $diff);
-                    $invItem->eom_count += $diff;
-                    $invItem->save();
+                    if (!InventoryVariance::available()) {
+                        $invItem->eom_count += $diff;
+                        $invItem->save();
+                    }
                 }
             }
         }
@@ -282,6 +304,185 @@ class DonationAndObligationController extends Controller
         $donation->delete();
 
         return response()->json(['success' => true, 'message' => 'Donation deleted successfully']);
+    }
+
+    /** Roles that record and manage donations (admins view only). */
+    private const DONATION_MANAGERS = ['custodian', 'instructor', 'superadmin'];
+
+    private static ?bool $tracksDonationValue = null;
+
+    /** False until the cost-and-deed migration has run. */
+    private static function tracksDonationValue(): bool
+    {
+        return self::$tracksDonationValue ??= Schema::hasColumn('donations', 'unit_cost');
+    }
+
+    private function newReceiptNumber(): string
+    {
+        do {
+            $receiptNumber = 'DON-' . date('Ymd') . '-' . mt_rand(1000, 9999);
+        } while (Donation::where('receipt_number', $receiptNumber)->exists());
+
+        return $receiptNumber;
+    }
+
+    /**
+     * POST /api/donations/{id}/deed
+     *
+     * Attach the signed deed of donation. The file itself is uploaded by the
+     * client first; this records where it is and marks the deed as signed.
+     */
+    public function attachDeed(Request $request, $id)
+    {
+        $user = auth()->user();
+        if (!$user || !in_array($user->role, self::DONATION_MANAGERS, true)) {
+            return response()->json(['error' => 'You do not have permission to perform this action.'], 403);
+        }
+
+        $donation = Donation::find($id);
+        if (!$donation) {
+            return response()->json(['error' => 'Donation record not found'], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'fileUrl' => 'required|url|max:2048',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['error' => 'Upload the signed deed first.', 'details' => $validator->errors()], 400);
+        }
+
+        $donation->update([
+            'deed_status' => 'signed',
+            'deed_file_url' => $request->fileUrl,
+            'deed_signed_at' => Carbon::now(),
+            'deed_uploaded_by' => $user->id,
+        ]);
+
+        return response()->json($this->transformDonation($donation->fresh()));
+    }
+
+    /**
+     * POST /api/donations/import
+     *
+     * Record many donations at once from a spreadsheet the client has already
+     * parsed. Every row is checked before anything is written, and the rows
+     * are saved together: a sheet with one bad row changes nothing.
+     *
+     * A row whose item name matches an inventory item adds to it; otherwise
+     * the item is created.
+     */
+    public function importDonations(Request $request)
+    {
+        $user = auth()->user();
+        if (!$user || !in_array($user->role, self::DONATION_MANAGERS, true)) {
+            return response()->json(['error' => 'You do not have permission to perform this action.'], 403);
+        }
+
+        $rows = $request->input('rows');
+        if (!is_array($rows) || count($rows) === 0) {
+            return response()->json(['error' => 'The file has no donation rows.'], 400);
+        }
+        if (count($rows) > 500) {
+            return response()->json(['error' => 'Import up to 500 donations at a time.'], 400);
+        }
+
+        $errors = [];
+        foreach ($rows as $index => $row) {
+            $validator = Validator::make(is_array($row) ? $row : [], [
+                'donorName' => 'required|string|max:255',
+                'itemName' => 'required|string|max:255',
+                'quantity' => 'required|integer|min:1',
+                'unitCost' => 'nullable|numeric|min:0|max:9999999999',
+                'date' => 'nullable|date',
+                'purpose' => 'nullable|string|max:1000',
+                'notes' => 'nullable|string|max:1000',
+                'category' => 'nullable|string|max:255',
+                'unit' => 'nullable|string|max:50',
+            ], [], [
+                'donorName' => 'donor', 'itemName' => 'item', 'unitCost' => 'unit cost',
+            ]);
+
+            foreach ($validator->errors()->all() as $message) {
+                // Row numbers match the spreadsheet: row 1 is the header.
+                $errors[] = ['row' => $index + 2, 'message' => $message];
+            }
+        }
+
+        if ($errors) {
+            return response()->json([
+                'error' => 'Some rows need fixing. Nothing was imported.',
+                'rowErrors' => array_slice($errors, 0, 100),
+            ], 422);
+        }
+
+        $summary = DB::transaction(function () use ($rows, $user) {
+            $created = 0;
+            $newItems = 0;
+            $units = 0;
+            $value = 0.0;
+            $tracksValue = self::tracksDonationValue();
+            $baselineFollows = !InventoryVariance::available();
+
+            foreach ($rows as $row) {
+                $name = trim($row['itemName']);
+                $quantity = (int) $row['quantity'];
+                $unitCost = isset($row['unitCost']) && $row['unitCost'] !== '' ? (float) $row['unitCost'] : null;
+
+                $item = InventoryItem::where('archived', false)
+                    ->whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
+                    ->first();
+
+                if ($item) {
+                    $item->increment('donations', $quantity);
+                    if ($baselineFollows) {
+                        $item->increment('eom_count', $quantity);
+                    }
+                    $action = 'add_to_existing';
+                } else {
+                    $categoryName = trim((string) ($row['category'] ?? '')) ?: 'General';
+                    $category = InventoryCategory::whereRaw('LOWER(name) = ?', [mb_strtolower($categoryName)])->first();
+
+                    $item = InventoryItem::create([
+                        'name' => $name,
+                        'category' => $category->name ?? $categoryName,
+                        'category_id' => $category->id ?? null,
+                        'tools_or_equipment' => '',
+                        'quantity' => 0,
+                        'unit_price' => $unitCost,
+                        'donations' => $quantity,
+                        'eom_count' => $baselineFollows ? $quantity : 0,
+                        'created_by' => $user->id,
+                    ]);
+                    if ($category) {
+                        $category->increment('item_count');
+                    }
+                    $action = 'new_item';
+                    $newItems++;
+                }
+
+                Donation::create(array_merge([
+                    'receipt_number' => $this->newReceiptNumber(),
+                    'donor_name' => trim($row['donorName']),
+                    'item_name' => $item->name,
+                    'quantity' => $quantity,
+                    'unit' => $row['unit'] ?? null,
+                    'purpose' => trim((string) ($row['purpose'] ?? '')) ?: 'Donation',
+                    'date' => !empty($row['date']) ? Carbon::parse($row['date']) : Carbon::now(),
+                    'notes' => $row['notes'] ?? null,
+                    'inventory_action' => $action,
+                    'inventory_item_id' => $item->id,
+                    'created_by' => $user->id,
+                ], $tracksValue ? ['unit_cost' => $unitCost] : []));
+
+                $created++;
+                $units += $quantity;
+                $value += ($unitCost ?? 0) * $quantity;
+            }
+
+            return ['imported' => $created, 'newItems' => $newItems, 'units' => $units, 'totalValue' => round($value, 2)];
+        });
+
+        return response()->json(array_merge(['success' => true], $summary));
     }
 
     public function streamDonations()
@@ -321,6 +522,7 @@ class DonationAndObligationController extends Controller
             'status' => $ob->status,
             'amount' => (int) $ob->amount,
             'amountPaid' => (int) $ob->amount_paid,
+            'surplusQuantity' => (int) ($ob->surplus_quantity ?? 0),
             'balance' => $balance,
             'resolutionType' => $ob->resolution_type,
             'resolutionDate' => $ob->resolution_date ? $ob->resolution_date->toIso8601String() : null,
@@ -400,9 +602,19 @@ class DonationAndObligationController extends Controller
         }
 
         $user = auth()->user();
-        $amountPaidInput = $request->integer('amountPaid', $ob->amount - $ob->amount_paid);
+        $remaining = max(0, $ob->amount - $ob->amount_paid);
+        $amountPaidInput = $request->integer('amountPaid', $remaining);
 
-        $ob->amount_paid += $amountPaidInput;
+        // A custodian may accept more than was owed (one broken glass replaced
+        // with three). Only the debt counts as paid; the rest is surplus stock.
+        $tracksSurplus = Schema::hasColumn('replacement_obligations', 'surplus_quantity');
+        $settled = $tracksSurplus ? min($amountPaidInput, $remaining) : $amountPaidInput;
+        $surplus = $amountPaidInput - $settled;
+
+        $ob->amount_paid += $settled;
+        if ($tracksSurplus) {
+            $ob->surplus_quantity += $surplus;
+        }
         $ob->resolution_type = $request->resolutionType;
         $ob->resolution_notes = $request->resolutionNotes;
         $ob->payment_reference = $request->paymentReference;
@@ -427,7 +639,9 @@ class DonationAndObligationController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Replacement obligation updated successfully'
+            'message' => 'Replacement obligation updated successfully',
+            'settled' => $settled,
+            'surplus' => $surplus
         ]);
     }
 
@@ -460,6 +674,9 @@ class DonationAndObligationController extends Controller
             $req->status = 'resolved';
             $req->resolved_at = Carbon::now();
             $req->save();
+
+            BorrowRequestEvent::record($req, 'resolved', auth()->user());
+
             return true;
         }
 

@@ -20,12 +20,19 @@ class Donation extends Model
         'notes',
         'inventory_action',
         'inventory_item_id',
-        'created_by'
+        'created_by',
+        'unit_cost',
+        'deed_status',
+        'deed_file_url',
+        'deed_signed_at',
+        'deed_uploaded_by'
     ];
 
     protected $casts = [
         'quantity' => 'integer',
-        'date' => 'datetime'
+        'date' => 'datetime',
+        'unit_cost' => 'decimal:2',
+        'deed_signed_at' => 'datetime'
     ];
 
     public function item(): BelongsTo

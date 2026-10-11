@@ -39,6 +39,7 @@ class BorrowRequest extends Model
         'expired_at',
         'cancelled_at',
         'cancelled_by',
+        'overdue_notice_sent_at',
         'created_by',
         'updated_by'
     ];
@@ -59,6 +60,7 @@ class BorrowRequest extends Model
         'returned_at' => 'datetime',
         'expired_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'overdue_notice_sent_at' => 'datetime',
     ];
 
     public function student(): BelongsTo
@@ -90,6 +92,14 @@ class BorrowRequest extends Model
     public function items(): HasMany
     {
         return $this->hasMany(BorrowRequestItem::class, 'borrow_request_id');
+    }
+
+    /** Lifecycle history with the person behind each step, oldest first. */
+    public function events(): HasMany
+    {
+        return $this->hasMany(BorrowRequestEvent::class, 'borrow_request_id')
+            ->orderBy('occurred_at')
+            ->orderBy('id');
     }
 
     /**

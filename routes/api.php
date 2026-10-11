@@ -17,6 +17,8 @@ use App\Http\Controllers\CartController;
 use App\Http\Controllers\WalkInTransactionController;
 use App\Http\Controllers\OperationsDashboardController;
 use App\Http\Controllers\StudentIncidentReportController;
+use App\Http\Controllers\InventoryReportsController;
+use App\Http\Controllers\DataImportController;
 
 use Illuminate\Support\Facades\Artisan;
 
@@ -124,6 +126,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/class-codes/stream', [ClassCodeController::class, 'stream']);
     Route::get('/class-codes/my-classes', [ClassCodeController::class, 'getMyClasses']);
     Route::get('/class-codes/{id}', [ClassCodeController::class, 'getById']);
+    Route::post('/class-codes/import', [DataImportController::class, 'classCodes']);
     Route::post('/class-codes', [ClassCodeController::class, 'create']);
     Route::patch('/class-codes/{id}', [ClassCodeController::class, 'update']);
     Route::delete('/class-codes/{id}', [ClassCodeController::class, 'delete']);
@@ -146,11 +149,14 @@ Route::middleware('jwt.auth')->group(function () {
     Route::post('/borrow-requests/{id}/missing', [BorrowRequestController::class, 'markMissing']);
     Route::post('/borrow-requests/{id}/send-reminder', [BorrowRequestController::class, 'sendOverdueReminder']);
     Route::post('/borrow-requests/{id}/inspect-items', [BorrowRequestController::class, 'inspectItems']);
+    Route::patch('/borrow-requests/{id}/due-date', [BorrowRequestController::class, 'updateReplacementDueDate']);
 
     // Donations
     Route::get('/donations', [DonationAndObligationController::class, 'getDonations']);
     Route::get('/donations/stream', [DonationAndObligationController::class, 'streamDonations']);
     Route::get('/donations/{id}', [DonationAndObligationController::class, 'getDonationById']);
+    Route::post('/donations/import', [DonationAndObligationController::class, 'importDonations']);
+    Route::post('/donations/{id}/deed', [DonationAndObligationController::class, 'attachDeed']);
     Route::post('/donations', [DonationAndObligationController::class, 'createDonation']);
     Route::patch('/donations/{id}', [DonationAndObligationController::class, 'addDonationQuantity']);
     Route::put('/donations/{id}', [DonationAndObligationController::class, 'updateDonation']);
@@ -192,12 +198,15 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/reports/analytics/signature', [AnalyticsReportController::class, 'signature']);
     Route::get('/reports/analytics/export', [AnalyticsReportController::class, 'export']);
     Route::get('/reports/student-incidents', [StudentIncidentReportController::class, 'index']);
+    Route::get('/reports/inventory-variance', [InventoryReportsController::class, 'variance']);
+    Route::get('/reports/returned-items', [InventoryReportsController::class, 'returnedItems']);
     Route::get('/reports/student-incidents/{studentId}', [StudentIncidentReportController::class, 'show']);
 
     // Users
     Route::get('/users', [UserController::class, 'getAll']);
     Route::get('/users/stream', [UserController::class, 'stream']);
     Route::get('/users/{id}', [UserController::class, 'getById']);
+    Route::post('/users/import', [DataImportController::class, 'users']);
     Route::post('/users', [UserController::class, 'create']);
     Route::patch('/users', [UserController::class, 'update']);
     Route::delete('/users', [UserController::class, 'delete']);

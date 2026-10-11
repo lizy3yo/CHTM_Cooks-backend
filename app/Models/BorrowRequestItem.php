@@ -23,14 +23,25 @@ class BorrowRequestItem extends Model
         'inspected_by',
         'inspection_notes',
         'replacement_quantity',
-        'due_date'
+        'due_date',
+        'good_quantity',
+        'damaged_quantity',
+        'missing_quantity',
+        'over_returned_quantity',
+        'inspection_remarks',
+        'inspection_photos'
     ];
 
     protected $casts = [
         'quantity' => 'integer',
         'inspection_date' => 'datetime',
         'replacement_quantity' => 'integer',
-        'due_date' => 'datetime'
+        'due_date' => 'datetime',
+        'good_quantity' => 'integer',
+        'damaged_quantity' => 'integer',
+        'missing_quantity' => 'integer',
+        'over_returned_quantity' => 'integer',
+        'inspection_photos' => 'array'
     ];
 
     public function borrowRequest(): BelongsTo

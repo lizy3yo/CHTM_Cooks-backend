@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\BorrowRequest;
+use App\Models\BorrowRequestEvent;
 use Carbon\Carbon;
 
 class BorrowRequestExpiry
@@ -26,6 +27,8 @@ class BorrowRequestExpiry
             $req->status = 'expired';
             $req->expired_at = Carbon::now();
             $req->save();
+
+            BorrowRequestEvent::record($req, 'expired');
 
             NotificationService::notifyBorrowRequestLifecycle($req, 'expired');
         }

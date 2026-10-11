@@ -25,10 +25,18 @@ class NotificationService
         'expired' => 'Expired — Not Picked Up'
     ];
 
+    /** Roles that oversee every request and are kept informed of each step. */
+    private const OVERSIGHT_ROLES = ['admin', 'superadmin'];
+
+    /** Roles that can hold the storeroom side of a request. */
+    private const STAFF_ROLES = ['custodian', 'admin', 'superadmin'];
+
     private static function getRolePath(string $role): string
     {
         if ($role === 'student') return '/student/requests';
         if ($role === 'instructor') return '/instructor/requests';
+        if ($role === 'admin') return '/admin/requests';
+        if ($role === 'superadmin') return '/superadmin/requests';
         return '/custodian/requests';
     }
 
@@ -36,6 +44,8 @@ class NotificationService
     {
         if ($role === 'student') return 'Student Portal';
         if ($role === 'instructor') return 'Instructor Portal';
+        if ($role === 'admin') return 'Admin Portal';
+        if ($role === 'superadmin') return 'Superadmin Portal';
         return 'Custodian Portal';
     }
 
@@ -54,6 +64,7 @@ class NotificationService
             case 'cancelled': return 'borrow_request_cancelled';
             case 'expired': return 'borrow_request_expired';
             case 'reminder_sent': return 'borrow_request_reminder';
+            case 'overdue_notice': return 'borrow_request_overdue_notice';
             case 'appealed': return 'borrow_request_appealed';
             default: return 'borrow_request_pending_review';
         }
@@ -97,10 +108,17 @@ class NotificationService
                     'emailSummary' => "The request was rejected. Please review the reason in your portal."
                 ];
             case 'ready_for_pickup':
+                if ($role === 'student') {
+                    return [
+                        'title' => "Ready for pickup ({$code})",
+                        'message' => "Your approved request is ready for pickup.",
+                        'emailSummary' => "Your request has been prepared and is now ready for pickup."
+                    ];
+                }
                 return [
-                    'title' => "Ready for pickup ({$code})",
-                    'message' => "Your approved request is ready for pickup.",
-                    'emailSummary' => "Your request has been prepared and is now ready for pickup."
+                    'title' => "Request ready for pickup ({$code})",
+                    'message' => "The items were prepared and are waiting for the student to collect them.",
+                    'emailSummary' => "A request has been prepared and is ready for pickup."
                 ];
             case 'picked_up':
                 return [
@@ -166,10 +184,30 @@ class NotificationService
                     'emailSummary' => "This approved request expired without pickup. No items left the storeroom."
                 ];
             case 'reminder_sent':
+                if ($role === 'student') {
+                    return [
+                        'title' => "Overdue reminder ({$code})",
+                        'message' => "Your borrowed items are overdue. Return them to the custodian as soon as possible.",
+                        'emailSummary' => "This is a reminder that your borrowed items are overdue for return."
+                    ];
+                }
                 return [
                     'title' => "Overdue reminder sent ({$code})",
-                    'message' => "A due-date reminder was sent for this borrow request.",
-                    'emailSummary' => "This is a reminder that your borrowed items are overdue for return."
+                    'message' => "A due-date reminder was sent to the student for this borrow request.",
+                    'emailSummary' => "An overdue reminder was sent to the student for this request."
+                ];
+            case 'overdue_notice':
+                if ($role === 'student') {
+                    return [
+                        'title' => "Disciplinary notice: items overdue ({$code})",
+                        'message' => "Your borrowed items are more than 3 days past their return date. Return them to the custodian now. Borrowing is on hold until they are back.",
+                        'emailSummary' => "Your borrowed items are more than 3 days past their return date. This is a formal disciplinary notice: return the items to the custodian immediately. You will not be able to submit new borrow requests until they are returned."
+                    ];
+                }
+                return [
+                    'title' => "Student 3 days overdue ({$code})",
+                    'message' => "The borrowed items are more than 3 days past their return date. A disciplinary notice was sent to the student and their borrowing is on hold.",
+                    'emailSummary' => "A request is more than 3 days overdue. A disciplinary notice was sent to the student."
                 ];
             case 'appealed':
                 if ($role === 'student') {
@@ -228,6 +266,26 @@ class NotificationService
             }
         }
 
+        // The disciplinary notice is emailed to the student; the instructor
+        // and every custodian are told in the app so they can follow up.
+        if ($event === 'overdue_notice') {
+            $staff = User::where('is_active', true)
+                ->where(function ($q) use ($request) {
+                    $q->where('role', 'custodian');
+                    if ($request->instructor_id) {
+                        $q->orWhere('id', $request->instructor_id);
+                    }
+                })
+                ->get();
+            foreach ($staff as $member) {
+                $recipients[$member->id] = [
+                    'user' => $member,
+                    'role' => $member->role,
+                    'emailed' => false
+                ];
+            }
+        }
+
         // Notify specific participants on terminal events
         if (in_array($event, ['missing', 'item_issue', 'returned', 'picked_up', 'expired'])) {
             if ($request->instructor_id) {
@@ -242,9 +300,11 @@ class NotificationService
             if ($request->custodian_id) {
                 $cust = User::where('id', $request->custodian_id)->where('is_active', true)->first();
                 if ($cust) {
+                    // An admin or superadmin can release a request too; address
+                    // them by their own role so the link opens their portal.
                     $recipients[$cust->id] = [
                         'user' => $cust,
-                        'role' => 'custodian'
+                        'role' => in_array($cust->role, self::STAFF_ROLES, true) ? $cust->role : 'custodian'
                     ];
                 }
             }
@@ -257,6 +317,18 @@ class NotificationService
                     unset($recipients[$id]);
                 }
             }
+        }
+
+        // Admins and superadmins oversee every request, so they hear about
+        // every step. They are notified in the app only: emailing each of them
+        // for every request in the college would bury their inbox.
+        $overseers = User::whereIn('role', self::OVERSIGHT_ROLES)->where('is_active', true)->get();
+        foreach ($overseers as $overseer) {
+            $recipients[$overseer->id] = [
+                'user' => $overseer,
+                'role' => $overseer->role,
+                'emailed' => false
+            ];
         }
 
         return array_values($recipients);
@@ -276,6 +348,10 @@ class NotificationService
         $requestItems = $request->items->map(fn($i) => "{$i->name} (x{$i->quantity})")->toArray();
         $statusLabel = self::$STATUS_LABELS[$request->status] ?? $request->status;
 
+        // Whoever is signed in performed this step; scheduled work has no actor.
+        $actor = auth()->user();
+        $actorName = $actor ? trim("{$actor->first_name} {$actor->last_name}") : null;
+
         foreach ($recipients as $recipient) {
             $user = $recipient['user'];
             $role = $recipient['role'];
@@ -293,13 +369,15 @@ class NotificationService
                 'metadata' => [
                     'status' => $request->status,
                     'requestCode' => $code,
-                    'event' => $event
+                    'event' => $event,
+                    'actorId' => $actor?->id,
+                    'performedBy' => $actorName
                 ],
                 'is_read' => false
             ]);
 
             // 2. Queue Email sending
-            if ($user->email) {
+            if ($user->email && ($recipient['emailed'] ?? true)) {
                 $isStudent = ($role === 'student');
                 dispatch(function () use ($user, $copy, $code, $statusLabel, $role, $request, $requestItems, $contextNotes, $isStudent) {
                     EmailService::sendBorrowRequestLifecycleEmail([
@@ -344,7 +422,10 @@ class NotificationService
             $metadata = $n->metadata;
             $event = $metadata['event'] ?? null;
 
-            if (!$req) {
+            if (!empty($metadata['actorId'])) {
+                // Recorded when the notification was created: the real actor.
+                $actorId = $metadata['actorId'];
+            } elseif (!$req) {
                 $actorId = $n->user_id;
             } else {
                 if ($event) {

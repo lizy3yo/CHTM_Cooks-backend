@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\BorrowRequest;
 use App\Models\BorrowRequestItem;
+use App\Models\BorrowRequestEvent;
 use App\Models\InventoryItem;
 use App\Models\InventoryActivityLog;
 use App\Models\ClassCode;
@@ -14,7 +15,9 @@ use App\Models\User;
 use App\Services\NotificationService;
 use App\Services\AvailabilityService;
 use App\Services\BorrowRequestExpiry;
+use App\Services\OverdueEnforcement;
 use App\Services\DeltaQuery;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
@@ -49,14 +52,16 @@ class BorrowRequestController extends Controller
         $items = $req->items->map(function ($item) {
             $inspection = null;
             if ($item->inspection_status) {
-                $inspection = [
+                $inspector = $item->inspector;
+                $inspection = array_merge([
                     'status' => $item->inspection_status,
                     'inspectedAt' => $item->inspection_date ? $item->inspection_date->toIso8601String() : null,
                     'inspectedBy' => (string) $item->inspected_by,
+                    'inspectedByName' => $inspector ? trim($inspector->first_name . ' ' . $inspector->last_name) : null,
                     'notes' => $item->inspection_notes,
                     'replacementQuantity' => $item->replacement_quantity,
                     'dueDate' => $item->due_date ? $item->due_date->toIso8601String() : null,
-                ];
+                ], $this->inspectionUnits($item));
             }
 
             return [
@@ -101,9 +106,81 @@ class BorrowRequestController extends Controller
             'resolvedAt' => $req->resolved_at ? $req->resolved_at->toIso8601String() : null,
             'lastReminderAt' => $req->last_reminder_at ? $req->last_reminder_at->toIso8601String() : null,
             'reminderCount' => (int) $req->reminder_count,
+            'overdueNoticeSentAt' => $req->overdue_notice_sent_at ? $req->overdue_notice_sent_at->toIso8601String() : null,
+            'events' => $this->transformEvents($req),
             'createdAt' => $req->created_at->toIso8601String(),
             'updatedAt' => $req->updated_at->toIso8601String(),
         ];
+    }
+
+    private static ?bool $hasInspectionDetail = null;
+
+    /** False until the inspection-detail migration has run. */
+    private static function hasInspectionDetail(): bool
+    {
+        return self::$hasInspectionDetail ??= Schema::hasColumn('borrow_request_items', 'good_quantity');
+    }
+
+    /**
+     * Unit counts, the custodian's note and evidence photos for an inspected
+     * line. Lines inspected before these were stored fall back to the single
+     * status: the whole affected quantity is counted under it.
+     */
+    private function inspectionUnits($item): array
+    {
+        $quantity = (int) $item->quantity;
+
+        if (self::hasInspectionDetail() && $item->good_quantity !== null) {
+            return [
+                'goodQuantity' => (int) $item->good_quantity,
+                'damagedQuantity' => (int) $item->damaged_quantity,
+                'missingQuantity' => (int) $item->missing_quantity,
+                'overReturnedQuantity' => (int) $item->over_returned_quantity,
+                'remarks' => $item->inspection_remarks,
+                'photos' => $item->inspection_photos ?? [],
+            ];
+        }
+
+        $affected = $item->inspection_status === 'good'
+            ? 0
+            : min($quantity, (int) ($item->replacement_quantity ?? $quantity));
+
+        return [
+            'goodQuantity' => $quantity - $affected,
+            'damagedQuantity' => $item->inspection_status === 'damaged' ? $affected : 0,
+            'missingQuantity' => $item->inspection_status === 'missing' ? $affected : 0,
+            'overReturnedQuantity' => 0,
+            'remarks' => null,
+            'photos' => [],
+        ];
+    }
+
+    /** The request's history for the timeline: what happened, when, and who did it. */
+    private function transformEvents($req): array
+    {
+        if (!BorrowRequestEvent::available()) {
+            return [];
+        }
+
+        return $req->events->map(fn ($e) => [
+            'event' => $e->event,
+            'at' => $e->occurred_at->toIso8601String(),
+            'actorId' => $e->actor_id ? (string) $e->actor_id : null,
+            'actorName' => $e->actor_name,
+            'actorRole' => $e->actor_role,
+            'notes' => $e->notes,
+            'outcome' => $e->metadata['outcome'] ?? null,
+        ])->values()->all();
+    }
+
+    /** Relations every request response needs. */
+    private function requestRelations(): array
+    {
+        $relations = ['student', 'instructor', 'custodian', 'canceller', 'items', 'items.inspector'];
+        if (BorrowRequestEvent::available()) {
+            $relations[] = 'events';
+        }
+        return $relations;
     }
 
     /** Roles that run the storeroom: release, pickup, check-in, inspection. */
@@ -188,11 +265,12 @@ class BorrowRequestController extends Controller
         // list itself, which every role depends on.
         try {
             BorrowRequestExpiry::sweep();
+            OverdueEnforcement::sweep();
         } catch (\Throwable $e) {
             report($e);
         }
 
-        $query = BorrowRequest::query()->with(['student', 'instructor', 'custodian', 'canceller', 'items']);
+        $query = BorrowRequest::query()->with($this->requestRelations());
 
         $user = auth()->user();
 
@@ -257,7 +335,7 @@ class BorrowRequestController extends Controller
 
     public function getById($id)
     {
-        $req = BorrowRequest::with(['student', 'instructor', 'custodian', 'canceller', 'items'])->find($id);
+        $req = BorrowRequest::with($this->requestRelations())->find($id);
         if (!$req) {
             return response()->json(['error' => 'Borrow request not found'], 404);
         }
@@ -315,6 +393,20 @@ class BorrowRequestController extends Controller
 
         if ($hasPending) {
             return response()->json(['error' => 'You already have an active pending request awaiting action.'], 403);
+        }
+
+        // The 3-day rule: items kept more than three days past their return
+        // date put borrowing on hold until they are back.
+        $blocking = OverdueEnforcement::blockingRequest($user->id);
+        if ($blocking) {
+            $itemNames = $blocking->items->pluck('name')->implode(', ');
+
+            return response()->json([
+                'error' => "Borrowing is on hold. {$itemNames} was due "
+                    . $blocking->return_date->format('M j') . ' and has not been returned. '
+                    . 'Return it to the custodian to borrow again.',
+                'code' => 'OVERDUE_HOLD',
+            ], 403);
         }
 
         // Check if student has active replacement obligations or unresolved missing/damaged items
@@ -386,6 +478,8 @@ class BorrowRequestController extends Controller
                 'picture' => $invItem->picture,
             ]);
         }
+
+        BorrowRequestEvent::record($borrowRequest, 'submitted', $user);
 
         // Send notifications
         NotificationService::notifyBorrowRequestLifecycle($borrowRequest, 'submitted');
@@ -503,6 +597,8 @@ class BorrowRequestController extends Controller
         $req->updated_by = $user->id;
         $req->save();
 
+        BorrowRequestEvent::record($req, 'approved', $user);
+
         // Notify student and custodians
         NotificationService::notifyBorrowRequestLifecycle($req, 'approved');
 
@@ -538,6 +634,8 @@ class BorrowRequestController extends Controller
         $req->updated_by = $user->id;
         $req->save();
 
+        BorrowRequestEvent::record($req, 'rejected', $user, $request->reason);
+
         // Notify student
         NotificationService::notifyBorrowRequestLifecycle($req, 'rejected', $request->reason . ($request->notes ? ". Notes: {$request->notes}" : ""));
 
@@ -562,6 +660,8 @@ class BorrowRequestController extends Controller
         $req->cancelled_by = $user->id;
         $req->updated_by = $user->id;
         $req->save();
+
+        BorrowRequestEvent::record($req, 'cancelled', $user);
 
         NotificationService::notifyBorrowRequestLifecycle($req, 'cancelled');
 
@@ -601,6 +701,8 @@ class BorrowRequestController extends Controller
         $req->updated_by = $user->id;
         $req->save();
 
+        BorrowRequestEvent::record($req, 'appealed', $user, $request->reason);
+
         // Notify instructor
         NotificationService::notifyBorrowRequestLifecycle($req, 'appealed', $request->reason);
 
@@ -625,6 +727,8 @@ class BorrowRequestController extends Controller
         $req->custodian_id = $user->id;
         $req->updated_by = $user->id;
         $req->save();
+
+        BorrowRequestEvent::record($req, 'ready_for_pickup', $user);
 
         // Notify student
         NotificationService::notifyBorrowRequestLifecycle($req, 'ready_for_pickup');
@@ -717,6 +821,8 @@ class BorrowRequestController extends Controller
         $req->updated_by = $user->id;
         $req->save();
 
+        BorrowRequestEvent::record($req, 'picked_up', $user);
+
         // Notify student
         NotificationService::notifyBorrowRequestLifecycle($req, 'picked_up');
 
@@ -740,6 +846,8 @@ class BorrowRequestController extends Controller
         $req->returned_at = Carbon::now();
         $req->updated_by = $user->id;
         $req->save();
+
+        BorrowRequestEvent::record($req, 'return_initiated', $user);
 
         // Notify custodians
         NotificationService::notifyBorrowRequestLifecycle($req, 'return_initiated');
@@ -786,6 +894,8 @@ class BorrowRequestController extends Controller
             ]);
         }
 
+        BorrowRequestEvent::record($req, 'missing', $user);
+
         // Notify student
         NotificationService::notifyBorrowRequestLifecycle($req, 'missing');
 
@@ -809,6 +919,8 @@ class BorrowRequestController extends Controller
         $req->reminder_count += 1;
         $req->save();
 
+        BorrowRequestEvent::record($req, 'reminder_sent', $user);
+
         // Send notification to student
         NotificationService::notifyBorrowRequestLifecycle($req, 'reminder_sent');
 
@@ -830,6 +942,12 @@ class BorrowRequestController extends Controller
             return $this->forbidden();
         }
 
+        // Items are checked in once. A second submission would restock the
+        // same units again and duplicate the replacement obligations.
+        if (!in_array($req->status, BorrowRequest::OUT_STATUSES, true)) {
+            return response()->json(['error' => 'This request has already been inspected.'], 409);
+        }
+
         $validator = Validator::make($request->all(), [
             'items' => 'required|array',
             'items.*.itemId' => 'required|integer',
@@ -837,6 +955,12 @@ class BorrowRequestController extends Controller
             'items.*.notes' => 'nullable|string',
             'items.*.replacementQuantity' => 'nullable|integer|min:0',
             'items.*.dueDate' => 'nullable|date',
+            'items.*.damagedQuantity' => 'nullable|integer|min:0',
+            'items.*.missingQuantity' => 'nullable|integer|min:0',
+            'items.*.additionalReturned' => 'nullable|integer|min:0',
+            'items.*.remarks' => 'nullable|string|max:1000',
+            'items.*.photos' => 'nullable|array|max:6',
+            'items.*.photos.*' => 'string|url|max:2048',
         ]);
 
         if ($validator->fails()) {
@@ -857,53 +981,88 @@ class BorrowRequestController extends Controller
                 ->where('item_id', $inspectInput['itemId'])
                 ->first();
 
-            if ($borrowItem) {
-                $remarks = $inspectInput['notes'] ?? '';
-                $formattedNotes = null;
-                if ($inspectInput['status'] !== 'good') {
-                    $formattedNotes = "Student: {$studentName} | Leader/Instructor: {$leaderName} | Lab Session Date: {$sessionDate} | Remarks: " . ($remarks ?: 'No remarks provided');
+            if (!$borrowItem) {
+                continue;
+            }
+
+            $quantity = (int) $borrowItem->quantity;
+
+            // Unit counts. Older clients send only a status and one affected
+            // quantity, which is then counted wholly under that status.
+            if (isset($inspectInput['damagedQuantity']) || isset($inspectInput['missingQuantity'])) {
+                $damaged = min($quantity, (int) ($inspectInput['damagedQuantity'] ?? 0));
+                $missing = min($quantity - $damaged, (int) ($inspectInput['missingQuantity'] ?? 0));
+            } else {
+                $affected = $inspectInput['status'] === 'good'
+                    ? 0
+                    : min($quantity, (int) ($inspectInput['replacementQuantity'] ?? $quantity));
+                $damaged = $inspectInput['status'] === 'damaged' ? $affected : 0;
+                $missing = $inspectInput['status'] === 'missing' ? $affected : 0;
+            }
+            $good = $quantity - $damaged - $missing;
+            $over = (int) ($inspectInput['additionalReturned'] ?? 0);
+            $status = $missing > 0 ? 'missing' : ($damaged > 0 ? 'damaged' : 'good');
+
+            $remarks = $inspectInput['notes'] ?? '';
+            $formattedNotes = null;
+            if ($status !== 'good') {
+                $formattedNotes = "Student: {$studentName} | Leader/Instructor: {$leaderName} | Lab Session Date: {$sessionDate} | Remarks: " . ($remarks ?: 'No remarks provided');
+            }
+
+            $dueDate = isset($inspectInput['dueDate']) ? Carbon::parse($inspectInput['dueDate']) : null;
+
+            $borrowItem->inspection_status = $status;
+            $borrowItem->inspection_date = Carbon::now();
+            $borrowItem->inspected_by = $user->id;
+            $borrowItem->inspection_notes = $formattedNotes ?: ($remarks ?: null);
+            $borrowItem->replacement_quantity = ($damaged + $missing) ?: null;
+            $borrowItem->due_date = $dueDate;
+
+            if (self::hasInspectionDetail()) {
+                $borrowItem->good_quantity = $good;
+                $borrowItem->damaged_quantity = $damaged;
+                $borrowItem->missing_quantity = $missing;
+                $borrowItem->over_returned_quantity = $over;
+                $borrowItem->inspection_remarks = $inspectInput['remarks'] ?? null;
+                $borrowItem->inspection_photos = array_values($inspectInput['photos'] ?? []);
+            }
+            $borrowItem->save();
+
+            // Every unit that physically came back in usable condition goes
+            // back on the shelf, including the good part of a line that also
+            // had damage, and any extra units handed in.
+            $restock = $good + $over;
+            if ($restock > 0) {
+                InventoryItem::where('id', $borrowItem->item_id)->increment('quantity', $restock);
+            }
+
+            // One obligation per kind of loss, so a line with both damaged and
+            // missing units reports each under its own name.
+            foreach (['damaged' => $damaged, 'missing' => $missing] as $type => $units) {
+                if ($units <= 0) {
+                    continue;
                 }
 
-                $borrowItem->inspection_status = $inspectInput['status'];
-                $borrowItem->inspection_date = Carbon::now();
-                $borrowItem->inspected_by = $user->id;
-                $borrowItem->inspection_notes = $formattedNotes ?: ($remarks ?: null);
-                $borrowItem->replacement_quantity = $inspectInput['replacementQuantity'] ?? null;
-                $borrowItem->due_date = isset($inspectInput['dueDate']) ? Carbon::parse($inspectInput['dueDate']) : null;
-                $borrowItem->save();
+                $hasIssues = true;
 
-                $invItem = InventoryItem::find($inspectInput['itemId']);
-
-                if ($inspectInput['status'] === 'good') {
-                    // Return items back to inventory stock
-                    if ($invItem) {
-                        $invItem->increment('quantity', $borrowItem->quantity);
-                    }
-                } else {
-                    $hasIssues = true;
-                    // For damaged/missing items, create replacement obligations
-                    $repQty = $inspectInput['replacementQuantity'] ?? $borrowItem->quantity;
-                    if ($repQty > 0) {
-                        ReplacementObligation::create([
-                            'borrow_request_id' => $req->id,
-                            'student_id' => $req->student_id,
-                            'item_id' => $borrowItem->item_id,
-                            'item_name' => $borrowItem->name,
-                            'item_category' => $borrowItem->category,
-                            'quantity' => $repQty,
-                            'type' => $inspectInput['status'],
-                            'status' => 'pending',
-                            'amount' => $repQty,
-                            'amount_paid' => 0,
-                            'resolution_type' => 'replacement',
-                            'incident_date' => Carbon::now(),
-                            'incident_notes' => $formattedNotes ?: 'Damaged or missing during return inspection.',
-                            'due_date' => isset($inspectInput['dueDate']) ? Carbon::parse($inspectInput['dueDate']) : Carbon::now()->addDays(7),
-                            'created_by' => $user->id,
-                        ]);
-                        $obligationsCreated++;
-                    }
-                }
+                ReplacementObligation::create([
+                    'borrow_request_id' => $req->id,
+                    'student_id' => $req->student_id,
+                    'item_id' => $borrowItem->item_id,
+                    'item_name' => $borrowItem->name,
+                    'item_category' => $borrowItem->category,
+                    'quantity' => $units,
+                    'type' => $type,
+                    'status' => 'pending',
+                    'amount' => $units,
+                    'amount_paid' => 0,
+                    'resolution_type' => 'replacement',
+                    'incident_date' => Carbon::now(),
+                    'incident_notes' => $formattedNotes ?: 'Damaged or missing during return inspection.',
+                    'due_date' => $dueDate ?? Carbon::now()->addDays(7),
+                    'created_by' => $user->id,
+                ]);
+                $obligationsCreated++;
             }
         }
 
@@ -911,6 +1070,10 @@ class BorrowRequestController extends Controller
         $req->returned_at = Carbon::now();
         $req->updated_by = $user->id;
         $req->save();
+
+        BorrowRequestEvent::record($req, 'inspected', $user, null, [
+            'outcome' => $hasIssues ? 'item_issue' : 'returned',
+        ]);
 
         // Notify student
         if ($hasIssues) {
@@ -925,6 +1088,54 @@ class BorrowRequestController extends Controller
             'status' => $req->status,
             'obligationsCreated' => $obligationsCreated
         ]);
+    }
+
+    /**
+     * PATCH /api/borrow-requests/{id}/due-date
+     *
+     * Move the replacement due date of a damaged or missing line. The line and
+     * its open replacement obligations share the date, so both are updated.
+     */
+    public function updateReplacementDueDate(Request $request, $id)
+    {
+        $req = BorrowRequest::find($id);
+        if (!$req) {
+            return response()->json(['error' => 'Borrow request not found'], 404);
+        }
+
+        if (!$this->isStaff(auth()->user(), $req)) {
+            return $this->forbidden();
+        }
+
+        $validator = Validator::make($request->all(), [
+            'itemId' => 'required|integer',
+            'dueDate' => 'required|date',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['error' => 'A valid item and due date are required.'], 400);
+        }
+
+        $dueDate = Carbon::parse($request->dueDate)->endOfDay();
+
+        $updated = BorrowRequestItem::where('borrow_request_id', $req->id)
+            ->where('item_id', $request->itemId)
+            ->whereIn('inspection_status', ['damaged', 'missing'])
+            ->update(['due_date' => $dueDate]);
+
+        if (!$updated) {
+            return response()->json(['error' => 'That item has no replacement to reschedule.'], 404);
+        }
+
+        ReplacementObligation::where('borrow_request_id', $req->id)
+            ->where('item_id', $request->itemId)
+            ->where('status', 'pending')
+            ->update(['due_date' => $dueDate, 'updated_by' => auth()->id(), 'updated_at' => Carbon::now()]);
+
+        // Touch the request so open screens pick the change up.
+        $req->touch();
+
+        return response()->json($this->transformBorrowRequest($req->fresh($this->requestRelations())));
     }
 
     public function stream()

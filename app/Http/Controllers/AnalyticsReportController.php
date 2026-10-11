@@ -501,6 +501,10 @@ class AnalyticsReportController extends Controller
                 'inventoryAction' => $d->inventory_action,
                 'date' => $d->date ? $d->date->toIso8601String() : null,
                 'createdAt' => $d->created_at->toIso8601String(),
+                // Declared value and deed; null / pending on older records.
+                'unitCost' => isset($d->unit_cost) ? (float) $d->unit_cost : null,
+                'totalValue' => isset($d->unit_cost) ? round((float) $d->unit_cost * (int) $d->quantity, 2) : null,
+                'deedStatus' => $d->deed_status ?? 'pending',
             ])
             ->values()
             ->toArray();
@@ -562,7 +566,7 @@ class AnalyticsReportController extends Controller
         return [
             'currentCount' => $totalStockQty,
             'eomCount' => $totalEomQty,
-            'variance' => $totalStockQty - $totalEomQty,
+            'variance' => $totalStockQty + $totalDonationsQty - $totalEomQty,
             'donations' => $totalDonationsQty,
             'requiredCount' => $requiredCount,
             'lowStockCount' => $lowStockCount,
@@ -670,14 +674,15 @@ class AnalyticsReportController extends Controller
 
     private function buildEomVariance(\Illuminate\Database\Eloquent\Collection $currentItems): array
     {
-        return $currentItems->filter(fn($i) => ($i->quantity - $i->eom_count) !== 0)->map(function ($i) {
+        // On hand includes donated stock, the same as the inventory page.
+        return $currentItems->filter(fn($i) => ($i->quantity + $i->donations - $i->eom_count) !== 0)->map(function ($i) {
             return [
                 '_id' => (string) $i->id,
                 'name' => $i->name,
                 'category' => $i->category,
-                'quantity' => $i->quantity,
+                'quantity' => $i->quantity + $i->donations,
                 'eomCount' => $i->eom_count,
-                'variance' => $i->quantity - $i->eom_count
+                'variance' => $i->quantity + $i->donations - $i->eom_count
             ];
         })->sortByDesc(fn($i) => abs($i['variance']))->slice(0, 200)->values()->toArray();
     }

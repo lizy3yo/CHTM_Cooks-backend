@@ -20,6 +20,7 @@ class ReplacementObligation extends Model
         'status',
         'amount',
         'amount_paid',
+        'surplus_quantity',
         'resolution_type',
         'resolution_date',
         'resolution_notes',
@@ -35,6 +36,7 @@ class ReplacementObligation extends Model
         'quantity' => 'integer',
         'amount' => 'integer',
         'amount_paid' => 'integer',
+        'surplus_quantity' => 'integer',
         'resolution_date' => 'datetime',
         'incident_date' => 'datetime',
         'due_date' => 'datetime'

@@ -178,13 +178,12 @@ class InventoryController extends Controller
         if ($search) {
             $searchVal = trim((string) $search);
             $like = '%' . mb_strtolower($searchVal) . '%';
-            $query->where(function ($q) use ($like, $searchVal) {
+            // The catalog is searched by what an item is called and described
+            // as. Items carry no code, so a number is just more text to match.
+            $query->where(function ($q) use ($like) {
                 $q->whereRaw('LOWER(name) LIKE ?', [$like])
                   ->orWhereRaw('LOWER(specification) LIKE ?', [$like])
                   ->orWhereRaw('LOWER(description) LIKE ?', [$like]);
-                if (is_numeric($searchVal)) {
-                    $q->orWhere('id', (int) $searchVal);
-                }
             });
         }
 
