@@ -230,8 +230,12 @@ class DonationDeedAndRosterTest extends TestCase
         $this->assertSame(6, (clone $students)->where('is_active', false)->count());
         $this->assertSame(9, DB::table('courses')->count());
         $this->assertSame(53, DB::table('class_codes')->count());
-        $this->assertSame(10, DonationDeed::count());
-        $this->assertSame(20, Donation::count());
+        // 10 real deeds (20 lines) and 4 recent samples (8 lines).
+        $this->assertSame(14, DonationDeed::count());
+        $this->assertSame(28, Donation::count());
+        $this->assertSame(4, DonationDeed::where('notes', 'like', 'Sample record%')->count());
+        $this->assertSame(12, DB::table('inventory_history')->where('ip_address', 'sample-data')->count());
+        $this->assertSame(0, InventoryItem::where('quantity', '<', 0)->count());
 
         // The inventory export, filed under Tools or Equipment and nothing else.
         $this->assertGreaterThanOrEqual(330, InventoryItem::count());
@@ -268,7 +272,8 @@ class DonationDeedAndRosterTest extends TestCase
         $this->seed(RealDataSeeder::class);
 
         $this->assertSame(845, User::where('role', 'student')->whereNotNull('student_number')->count());
-        $this->assertSame(20, Donation::count());
+        $this->assertSame(28, Donation::count());
+        $this->assertSame(12, DB::table('inventory_history')->where('ip_address', 'sample-data')->count());
         $this->assertSame($items, InventoryItem::count());
         $this->assertSame($requests, DB::table('borrow_requests')->count());
         $this->assertEquals($onShelf, InventoryItem::sum('quantity'));

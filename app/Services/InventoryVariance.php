@@ -191,6 +191,11 @@ class InventoryVariance
             ? array_merge(self::openShortages($now, $category), $adjustmentsDown)
             : $adjustmentsDown;
 
+        // Each entry carries its item's photo for the details window.
+        $withPicture = fn (array $entry) => $entry + ['picture' => $items[$entry['itemId'] ?? null]->picture ?? null];
+        $over = array_map($withPicture, $over);
+        $under = array_map($withPicture, $under);
+
         usort($over, fn ($a, $b) => strcmp($b['date'] ?? '', $a['date'] ?? ''));
         usort($under, fn ($a, $b) => ($b['daysOutstanding'] ?? 0) <=> ($a['daysOutstanding'] ?? 0));
 

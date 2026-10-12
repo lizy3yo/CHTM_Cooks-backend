@@ -9,6 +9,7 @@ use App\Models\ClassCode;
 use App\Models\Course;
 use App\Models\Donation;
 use App\Models\DonationDeed;
+use App\Models\InventoryActivityLog;
 use App\Models\InventoryCategory;
 use App\Models\InventoryItem;
 use App\Models\ReplacementObligation;
@@ -102,6 +103,8 @@ class RealDataSeeder extends Seeder
         $cleared   = $this->removeEarlierSampleRequests();
         $history   = $this->seedHistory($classes, $instructor, $custodian, $admin, $inventory);
         $live      = $this->seedLiveRequests($classes, $instructor, $custodian, $admin, $inventory);
+        $adjusted  = $this->seedStockAdjustments($custodian, $inventory);
+        $sampled   = $this->seedSampleDeeds($classes, $admin, $inventory);
         $walkIns   = $this->seedWalkIns($classes, $admin, $inventory);
 
         $this->command->info(sprintf(
@@ -120,6 +123,7 @@ class RealDataSeeder extends Seeder
             'Requests: %d completed in the past added, %d under review, %d with the custodian, %d released (%d earlier samples removed).',
             $history, $live['pending_instructor'], $live['approved_instructor'], $live['borrowed'], $cleared
         ));
+        $this->command->info(sprintf('Samples for the reports: %d stock adjustments, %d recent deeds.', $adjusted, $sampled));
         $this->command->info(sprintf(
             'Removed fictional data: %d students, %d classes, %d donations, %d walk-ins.',
             $removed['students'], $removed['classes'], $removed['donations'], $removed['walkIns']
@@ -891,6 +895,190 @@ class RealDataSeeder extends Seeder
         });
 
         return $made;
+    }
+
+    /**
+     * When the current starting counts were taken: the latest month-end close,
+     * or the start of the month if the books have never been closed. Stock
+     * that moved before this moment is already inside the starting count.
+     */
+    private function countingSince(): Carbon
+    {
+        $monthStart = Carbon::now()->startOfMonth();
+        if (!\Illuminate\Support\Facades\Schema::hasTable('inventory_period_closings')) {
+            return $monthStart;
+        }
+        $closedAt = DB::table('inventory_period_closings')->max('closed_at');
+
+        return $closedAt && Carbon::parse($closedAt)->gt($monthStart) ? Carbon::parse($closedAt) : $monthStart;
+    }
+
+    /** Marks rows this seeder wrote to the inventory activity log. */
+    private const SAMPLE_MARK = 'sample-data';
+
+    /**
+     * Stock adjustments by the custodian over the past eight weeks: purchases
+     * and recount finds that add stock, breakage and disposal that remove it.
+     *
+     * Each one moves the item's count. An adjustment from a month that is
+     * already closed is part of that item's starting count; one from this
+     * month is left to show as Over or Under in the variance report.
+     */
+    private function seedStockAdjustments(User $custodian, $inventory): int
+    {
+        // [days ago, change, reason]
+        $plan = [
+            [54, +6, 'New purchase: additional units for the laboratory'],
+            [50, -1, 'Broken during cleaning'],
+            [47, +2, 'Found during recount'],
+            [41, -2, 'Worn out, disposed'],
+            [36, +4, 'New purchase: replacement set'],
+            [33, -1, 'Cracked, no longer safe to use'],
+            [27, +1, 'Found during recount'],
+            [22, -1, 'Broken during cleaning'],
+            [16, +3, 'New purchase: additional units for the laboratory'],
+            [9,  -1, 'Rusted, disposed'],
+            [5,  +2, 'Found during recount'],
+            [2,  -1, 'Chipped, removed from use'],
+        ];
+
+        $have = InventoryActivityLog::where('ip_address', self::SAMPLE_MARK)->count();
+        if ($have >= count($plan) || $inventory->isEmpty()) {
+            return 0;
+        }
+
+        $monthStart = $this->countingSince();
+        $created = 0;
+
+        DB::transaction(function () use ($plan, $have, $custodian, $inventory, $monthStart, &$created) {
+            foreach (array_slice($plan, $have, null, true) as $n => [$daysAgo, $change, $reason]) {
+                // Spread over the shelf, and never take an item below zero.
+                $item = null;
+                for ($try = 0; $try < $inventory->count() && !$item; $try++) {
+                    $candidate = InventoryItem::find($inventory[($n * 23 + 5 + $try) % $inventory->count()]->id);
+                    if ($candidate && $candidate->quantity + $change >= 1) {
+                        $item = $candidate;
+                    }
+                }
+                if (!$item) {
+                    continue;
+                }
+
+                $at = Carbon::now()->subDays($daysAgo)->setTime(9 + $n % 7, 10 * ($n % 6));
+                $before = (int) $item->quantity;
+
+                $update = ['quantity' => $before + $change];
+                if ($at->lt($monthStart)) {
+                    $update['eom_count'] = max(0, (int) $item->eom_count + $change);
+                }
+                DB::table('inventory_items')->where('id', $item->id)->update($update);
+
+                InventoryActivityLog::create([
+                    'action'      => 'item_updated',
+                    'entity_type' => 'item',
+                    'entity_id'   => $item->id,
+                    'entity_name' => $item->name,
+                    'user_id'     => $custodian->id,
+                    'user_name'   => trim($custodian->first_name . ' ' . $custodian->last_name),
+                    'user_role'   => $custodian->role,
+                    'changes'     => [['field' => 'quantity', 'oldValue' => $before, 'newValue' => $before + $change]],
+                    'metadata'    => ['adjustment' => ['type' => $change > 0 ? 'add' : 'subtract', 'reason' => $reason], 'sample' => true],
+                    'ip_address'  => self::SAMPLE_MARK,
+                    'timestamp'   => $at,
+                ]);
+                $created++;
+            }
+        });
+
+        return $created;
+    }
+
+    /**
+     * Four recent deeds so the donor report has entries for the current
+     * period (the real deeds date from 2024 and 2025). Each is given by a
+     * class representative from the roster, adds to items already in the
+     * inventory, and says in its notes that it is a sample.
+     */
+    private function seedSampleDeeds(array $classes, User $admin, $inventory): int
+    {
+        // [reference, days ago, [[quantity, value each], ...]]
+        $plan = [
+            ['DEED-SAMPLE-0001', 45, [[4, 185], [2, 320]]],
+            ['DEED-SAMPLE-0002', 30, [[6, 95]]],
+            ['DEED-SAMPLE-0003', 12, [[3, 240], [5, 60], [1, 1250]]],
+            ['DEED-SAMPLE-0004', 4,  [[2, 450], [4, 120]]],
+        ];
+
+        if ($inventory->isEmpty() || !$classes) {
+            return 0;
+        }
+
+        $monthStart = $this->countingSince();
+        $created = 0;
+
+        DB::transaction(function () use ($plan, $classes, $admin, $inventory, $monthStart, &$created) {
+            foreach ($plan as $n => [$reference, $daysAgo, $lines]) {
+                if (DonationDeed::where('reference', $reference)->exists()) {
+                    continue;
+                }
+
+                $entry = $classes[($n * 11 + 3) % count($classes)];
+                $representative = $this->classStudents($entry['class'])->get($n + 2) ?? $this->classStudents($entry['class'])->first();
+                if (!$representative) {
+                    continue;
+                }
+
+                $donated = Carbon::now()->subDays($daysAgo)->setTime(10, 0);
+                $total = array_sum(array_map(fn($line) => $line[0] * $line[1], $lines));
+
+                $deed = DonationDeed::create([
+                    'reference'           => $reference,
+                    'representative_name' => trim($representative->first_name . ' ' . $representative->last_name),
+                    'submitter_email'     => $representative->email,
+                    'student_id'          => $representative->id,
+                    'program'             => 'BSHM',
+                    'date_donated'        => $donated->toDateString(),
+                    'declared_total'      => $total,
+                    'notes'               => 'Sample record for demonstration. Class donation from ' . $entry['class']->course_code . ' ' . $entry['class']->section . '.',
+                    'files'               => [],
+                    'submitted_at'        => $donated,
+                    'encoded_by'          => $admin->id,
+                ]);
+
+                foreach ($lines as $i => [$quantity, $unitCost]) {
+                    $item = InventoryItem::find($inventory[($n * 31 + $i * 17 + 9) % $inventory->count()]->id);
+
+                    $item->increment('donations', $quantity);
+                    if ($donated->lt($monthStart)) {
+                        $item->increment('eom_count', $quantity);
+                    }
+
+                    $donation = new Donation([
+                        'receipt_number'    => sprintf('%s-%02d', $reference, $i + 1),
+                        'donor_name'        => $deed->representative_name,
+                        'item_name'         => $item->name,
+                        'quantity'          => $quantity,
+                        'unit'              => 'pcs',
+                        'purpose'           => 'Item donation to CHTM laboratory',
+                        'date'              => $donated,
+                        'notes'             => $deed->notes,
+                        'inventory_action'  => 'add_to_existing',
+                        'inventory_item_id' => $item->id,
+                        'created_by'        => $admin->id,
+                        'unit_cost'         => $unitCost,
+                        'deed_status'       => 'pending',
+                        'deed_id'           => $deed->id,
+                    ]);
+                    $donation->timestamps = false;
+                    $donation->created_at = $donated;
+                    $donation->updated_at = $donated;
+                    $donation->save();
+                }
+                $created++;
+            }
+        });
+
+        return $created;
     }
 
     /** Five walk-ins by enrolled students: three still borrowed, two returned. */

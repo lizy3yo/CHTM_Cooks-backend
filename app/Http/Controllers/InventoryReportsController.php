@@ -21,6 +21,15 @@ use Illuminate\Support\Facades\Schema;
  */
 class InventoryReportsController extends Controller
 {
+    /** Current photo of an inventory item, so report details can show it. */
+    private static function pictureOf($itemId): ?string
+    {
+        static $pictures = null;
+        $pictures ??= \App\Models\InventoryItem::withTrashed()->pluck('picture', 'id');
+
+        return $itemId ? ($pictures[$itemId] ?? null) : null;
+    }
+
     private const ALLOWED_ROLES = ['admin', 'custodian', 'superadmin', 'instructor'];
 
     private function forbidden()
@@ -141,6 +150,8 @@ class InventoryReportsController extends Controller
                     'studentId' => $req ? (string) $req->student_id : null,
                     'studentName' => $req?->student ? trim($req->student->first_name . ' ' . $req->student->last_name) : 'Unknown Student',
                     'itemName' => $line->name,
+                    'itemId' => (string) $line->item_id,
+                    'picture' => self::pictureOf($line->item_id) ?? $line->picture,
                     'category' => $line->category,
                     'quantity' => $quantity,
                     'good' => $good,

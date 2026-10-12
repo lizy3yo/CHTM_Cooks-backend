@@ -22,6 +22,16 @@ use Illuminate\Support\Collection;
 
 class AnalyticsReportController extends Controller
 {
+    private ?\Illuminate\Support\Collection $itemPictures = null;
+
+    /** Current photo of an inventory item, so report details can show it. */
+    private function pictureOf($itemId): ?string
+    {
+        $this->itemPictures ??= InventoryItem::withTrashed()->pluck('picture', 'id');
+
+        return $itemId ? ($this->itemPictures[$itemId] ?? null) : null;
+    }
+
     /**
      * Borrow request status as shown in exports ("pending_return" → "Pending Return").
      * pending_instructor is shown as "Under Review", matching the app.
@@ -191,7 +201,9 @@ class AnalyticsReportController extends Controller
                 'items' => $w->items->map(fn($i) => [
                     'name' => $i->name,
                     'quantity' => (int) $i->quantity,
-                    'category' => $i->category ?? ''
+                    'category' => $i->category ?? '',
+                    'picture' => $this->pictureOf($i->item_id),
+                    'inspectionStatus' => $i->inspection_status,
                 ])->values()->toArray()
             ];
         })->values()->toArray();
@@ -316,6 +328,7 @@ class AnalyticsReportController extends Controller
                         'id' => (string) $itemId,
                         'name' => $item->name,
                         'category' => $item->category,
+                        'picture' => $this->pictureOf($itemId) ?? $item->picture,
                         'totalQuantity' => 0,
                         'borrowCount' => 0
                     ];
@@ -338,6 +351,12 @@ class AnalyticsReportController extends Controller
                     'requestId' => (string) $r->id,
                     'requestDate' => $r->created_at->toIso8601String(),
                     'requestStatus' => $r->status,
+                    'borrowDate' => $r->borrow_date ? $r->borrow_date->toIso8601String() : null,
+                    'returnDate' => $r->return_date ? $r->return_date->toIso8601String() : null,
+                    'returnedAt' => $r->returned_at ? $r->returned_at->toIso8601String() : null,
+                    'purpose' => $r->purpose,
+                    'itemId' => (string) $item->item_id,
+                    'picture' => $this->pictureOf($item->item_id) ?? $item->picture,
                     'name' => $item->name,
                     'category' => $item->category,
                     'quantity' => $item->quantity,
@@ -484,7 +503,8 @@ class AnalyticsReportController extends Controller
      */
     private function buildDonationRecords(Carbon $start, Carbon $end): array
     {
-        return Donation::where('donor_name', '!=', 'Custodian Stock Adjustment')
+        return Donation::with(['deed', 'creator'])
+            ->where('donor_name', '!=', 'Custodian Stock Adjustment')
             ->whereBetween('created_at', [$start, $end])
             ->orderBy('created_at', 'desc')
             ->limit(300)
@@ -505,6 +525,22 @@ class AnalyticsReportController extends Controller
                 'unitCost' => isset($d->unit_cost) ? (float) $d->unit_cost : null,
                 'totalValue' => isset($d->unit_cost) ? round((float) $d->unit_cost * (int) $d->quantity, 2) : null,
                 'deedStatus' => $d->deed_status ?? 'pending',
+                // For the details window: the item's photo and the deed it was given under.
+                'inventoryItemId' => $d->inventory_item_id ? (string) $d->inventory_item_id : null,
+                'picture' => $this->pictureOf($d->inventory_item_id),
+                'recordedBy' => $d->creator ? trim($d->creator->first_name . ' ' . $d->creator->last_name) : null,
+                'deed' => $d->deed ? [
+                    'id' => (string) $d->deed->id,
+                    'reference' => $d->deed->reference,
+                    'representativeName' => $d->deed->representative_name,
+                    'submitterEmail' => $d->deed->submitter_email,
+                    'program' => $d->deed->program,
+                    'dateDonated' => $d->deed->date_donated?->toDateString(),
+                    'orNumber' => $d->deed->or_number,
+                    'declaredTotal' => $d->deed->declared_total !== null ? (float) $d->deed->declared_total : null,
+                    'notes' => $d->deed->notes,
+                    'files' => array_values($d->deed->files ?? []),
+                ] : null,
             ])
             ->values()
             ->toArray();
@@ -531,15 +567,24 @@ class AnalyticsReportController extends Controller
             ->map(function ($log) {
                 $adj = $log->metadata['adjustment'] ?? [];
                 $delta = 0;
+                $before = null;
+                $after = null;
                 foreach (($log->changes ?? []) as $c) {
                     if (in_array($c['field'] ?? '', ['quantity', 'donations'], true)) {
                         $delta += (int) ($c['newValue'] ?? 0) - (int) ($c['oldValue'] ?? 0);
+                        $before = ($before ?? 0) + (int) ($c['oldValue'] ?? 0);
+                        $after = ($after ?? 0) + (int) ($c['newValue'] ?? 0);
                     }
                 }
                 // Fall back to the declared type if no numeric delta was captured.
                 if ($delta === 0 && ($adj['type'] ?? '') === 'subtract') $delta = 0;
                 return (object) [
                     'id' => $log->id,
+                    'item_id' => $log->entity_id,
+                    'actor' => $log->user_name,
+                    'actor_role' => $log->user_role,
+                    'before' => $before,
+                    'after' => $after,
                     'item_name' => $log->entity_name,
                     'quantity' => $delta,
                     'purpose' => trim((string) ($adj['reason'] ?? '')),
@@ -680,6 +725,7 @@ class AnalyticsReportController extends Controller
                 '_id' => (string) $i->id,
                 'name' => $i->name,
                 'category' => $i->category,
+                'picture' => $i->picture,
                 'quantity' => $i->quantity + $i->donations,
                 'eomCount' => $i->eom_count,
                 'variance' => $i->quantity + $i->donations - $i->eom_count
@@ -727,7 +773,14 @@ class AnalyticsReportController extends Controller
                 'purpose' => $a->purpose,
                 'notes' => $a->notes,
                 'createdAt' => $a->created_at->toIso8601String(),
-                'date' => $a->date ? $a->date->toIso8601String() : null
+                'date' => $a->date ? $a->date->toIso8601String() : null,
+                // For the details window.
+                'itemId' => isset($a->item_id) ? (string) $a->item_id : null,
+                'picture' => $this->pictureOf($a->item_id ?? null),
+                'adjustedBy' => $a->actor ?? null,
+                'adjustedByRole' => $a->actor_role ?? null,
+                'countBefore' => $a->before ?? null,
+                'countAfter' => $a->after ?? null,
             ];
         })->values()->toArray();
     }
