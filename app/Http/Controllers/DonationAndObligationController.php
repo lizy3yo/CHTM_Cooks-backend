@@ -903,10 +903,20 @@ class DonationAndObligationController extends Controller
     public function reconcile()
     {
         $reconciled = 0;
-        $requests = BorrowRequest::where('status', 'missing')->get();
 
-        foreach ($requests as $req) {
-            if ($this->reconcileRequest($req->id)) {
+        // Request pages call this on every load, and there is almost never
+        // anything to do. One query finds the requests that actually need
+        // resolving, instead of loading every unresolved request and checking
+        // each in turn.
+        $ids = BorrowRequest::where('status', 'missing')
+            ->whereNotIn(
+                'id',
+                ReplacementObligation::where('status', 'pending')->select('borrow_request_id')
+            )
+            ->pluck('id');
+
+        foreach ($ids as $id) {
+            if ($this->reconcileRequest($id)) {
                 $reconciled++;
             }
         }

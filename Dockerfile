@@ -15,7 +15,7 @@ RUN apk add --no-cache \
     postgresql-dev
 
 # Install PHP extensions
-RUN docker-php-ext-install pdo_mysql pdo_pgsql mbstring xml pcntl bcmath gd zip
+RUN docker-php-ext-install pdo_mysql pdo_pgsql mbstring xml pcntl bcmath gd zip opcache
 
 # Copy composer
 COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
@@ -37,6 +37,8 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction
 # Copy configuration files
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/php-opcache.ini /usr/local/etc/php/conf.d/zz-opcache.ini
+COPY docker/php-fpm-pool.conf /usr/local/etc/php-fpm.d/zz-pool.conf
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Make entrypoint executable

@@ -11,6 +11,7 @@ use App\Models\Notification;
 use App\Models\ReplacementObligation;
 use App\Models\SupportTicket;
 use App\Models\User;
+use App\Models\WalkInTransaction;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
@@ -40,13 +41,13 @@ class ChangeSignatures
             'notification_change' => [self::class, 'notifications'],
             'user_change' => [self::class, 'users'],
             'support_change' => [self::class, 'supportTickets'],
+            'walk_in_change' => [self::class, 'walkIns'],
         ];
     }
 
     /**
-     * Topics worth streaming to a given role. Students have no business being
-     * woken by staff-only tables, and every topic omitted here is one less
-     * query per poll tick.
+     * Topics worth streaming to a given role. Every topic omitted here is one
+     * less query per poll tick.
      *
      * @return array<string, callable(?User): string>
      */
@@ -55,36 +56,85 @@ class ChangeSignatures
         $all = self::all();
         $role = $user->role ?? 'student';
 
+        // Walk-in transactions are a staff screen. Every other topic either
+        // drives a student screen or is narrowed to the viewer further down.
         if ($role === 'student') {
-            return array_intersect_key($all, array_flip([
-                'borrow_request_change',
-                'inventory_change',
-                'replacement_obligation_change',
-                'notification_change',
-                'class_code_change',
-                'support_change',
-                // Drives the profile page; the users table changes rarely, so
-                // watching it globally costs almost nothing.
-                'user_change',
-            ]));
+            unset($all['walk_in_change']);
         }
 
-        if ($role === 'instructor') {
-            return array_intersect_key($all, array_flip([
-                'borrow_request_change',
-                'inventory_change',
-                'replacement_obligation_change',
-                'notification_change',
-                'class_code_change',
-                'support_change',
-                // Drives the profile page; the users table changes rarely, so
-                // watching it globally costs almost nothing.
-                'user_change',
-            ]));
-        }
-
-        // Custodians, admins and superadmins see everything.
         return $all;
+    }
+
+    /**
+     * Every fingerprint this viewer watches, read once.
+     *
+     * `recent` closes the one gap a `MAX(updated_at)` fingerprint has. Stamps
+     * have second precision, so a second write landing in the same second as
+     * one already seen leaves the fingerprint unchanged. Any topic whose newest
+     * row was stamped at or after the caller's previous read is therefore
+     * reported again; the cost is an occasional redundant refetch, never a
+     * missed update.
+     *
+     * @param  int|null  $after  Unix time of the caller's previous read.
+     * @return array{signatures: array<string, string>, recent: array<int, string>, at: int}
+     */
+    public static function snapshot(?User $user, ?int $after = null, ?array $topics = null): array
+    {
+        $at = time();
+        $signatures = [];
+        $recent = [];
+
+        foreach ($topics ?? self::forUser($user) as $event => $fingerprint) {
+            try {
+                $signatures[$event] = (string) $fingerprint($user);
+            } catch (\Throwable $e) {
+                // A dropped database connection must read as "unknown", never
+                // surface as a broken response.
+                $signatures[$event] = 'error';
+                continue;
+            }
+
+            if ($after !== null && self::touchedSince($signatures[$event], $after, $at)) {
+                $recent[] = $event;
+            }
+        }
+
+        return ['signatures' => $signatures, 'recent' => $recent, 'at' => $at];
+    }
+
+    /**
+     * Whether a fingerprint's newest row was stamped in the window
+     * [`$since`, `$now`], both Unix times.
+     *
+     * The upper bound matters: a column stamped by the database in another
+     * timezone can sit permanently "in the future", and without the bound it
+     * would report a change on every single read.
+     */
+    public static function touchedSince(string $signature, int $since, ?int $now = null): bool
+    {
+        $newest = self::newestStamp($signature);
+
+        if ($newest === null) {
+            return false;
+        }
+
+        $now ??= time();
+
+        return $newest >= date('Y-m-d H:i:s', $since)
+            && $newest <= date('Y-m-d H:i:s', $now + 1);
+    }
+
+    /**
+     * The latest `Y-m-d H:i:s` stamp inside a fingerprint, or null when the
+     * topic has no rows. Composite fingerprints carry more than one.
+     */
+    public static function newestStamp(string $signature): ?string
+    {
+        if (!preg_match_all('/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/', $signature, $matches)) {
+            return null;
+        }
+
+        return max(array_map(fn (string $stamp) => str_replace('T', ' ', $stamp), $matches[0]));
     }
 
     public static function borrowRequests(?User $user): string
@@ -150,6 +200,11 @@ class ChangeSignatures
         }
 
         return self::fingerprint($query);
+    }
+
+    public static function walkIns(?User $user): string
+    {
+        return self::fingerprint(WalkInTransaction::query());
     }
 
     /**

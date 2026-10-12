@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Services\ChangeSignatures;
 use App\Services\StreamService;
+use Illuminate\Http\Request;
 
 /**
  * One realtime stream per client, carrying every topic that client cares about.
@@ -30,21 +31,18 @@ class RealtimeController extends Controller
      *
      * The same fingerprints as a single JSON read. Used as a polling fallback
      * where a long-lived connection is not possible — a single-worker dev
-     * server, or a proxy that buffers event streams.
+     * server, a proxy that buffers event streams, or a server whose stream
+     * budget is spent.
+     *
+     * `after` is the `at` value from the caller's previous read. It lets the
+     * server report topics written in that same second (`recent`), which the
+     * fingerprints alone cannot distinguish.
      */
-    public function signature()
+    public function signature(Request $request)
     {
-        $user = auth()->user();
-        $signatures = [];
+        $after = $request->query('after');
+        $after = StreamService::resumePoint(is_string($after) ? $after : null);
 
-        foreach (ChangeSignatures::forUser($user) as $event => $fingerprint) {
-            try {
-                $signatures[$event] = (string) $fingerprint($user);
-            } catch (\Throwable $e) {
-                $signatures[$event] = 'error';
-            }
-        }
-
-        return response()->json(['signatures' => $signatures]);
+        return response()->json(ChangeSignatures::snapshot(auth()->user(), $after));
     }
 }

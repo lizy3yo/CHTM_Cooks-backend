@@ -17,6 +17,7 @@ use App\Services\AvailabilityService;
 use App\Services\BorrowRequestExpiry;
 use App\Services\OverdueEnforcement;
 use App\Services\DeltaQuery;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -258,14 +259,39 @@ class BorrowRequestController extends Controller
         ]);
     }
 
+    /**
+     * True for the first caller in each interval, across all workers.
+     * `Cache::add` is atomic, so concurrent reads cannot both run the sweep.
+     */
+    private function sweepIsDue(): bool
+    {
+        $interval = (int) config('realtime.sweep_interval_seconds', 60);
+
+        if ($interval <= 0) {
+            return true;
+        }
+
+        try {
+            return Cache::add('borrow-requests:read-sweep', 1, $interval);
+        } catch (\Throwable $e) {
+            // Without a working cache, fall back to sweeping on every read.
+            return true;
+        }
+    }
+
     public function list(Request $request)
     {
-        // No scheduler runs in this project, so the sweep piggybacks on reads.
-        // It is housekeeping: a failure is reported but must never block the
-        // list itself, which every role depends on.
+        // The scheduler runs these sweeps hourly; reads run them too so a
+        // deployment without it still catches up. They are housekeeping, and
+        // this list is the busiest read in the app (every open request page
+        // re-reads it on each change), so they run at most once per interval
+        // rather than on every call. A failure is reported but must never
+        // block the list itself, which every role depends on.
         try {
-            BorrowRequestExpiry::sweep();
-            OverdueEnforcement::sweep();
+            if ($this->sweepIsDue()) {
+                BorrowRequestExpiry::sweep();
+                OverdueEnforcement::sweep();
+            }
         } catch (\Throwable $e) {
             report($e);
         }
