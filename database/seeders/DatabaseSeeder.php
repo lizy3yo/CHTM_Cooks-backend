@@ -82,10 +82,11 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
-        // 6. Demo data (classes, students, requests, donations, walk-ins).
-        //    Opt-in so production only gets it when SEED_DEMO_DATA=true.
-        if (filter_var(env('SEED_DEMO_DATA', false), FILTER_VALIDATE_BOOLEAN)) {
-            $this->call(StudentClassSeeder::class);
+        // 6. The college's real records (students, lab classes, deeds of donation)
+        //    plus sample activity. Opt-in so production only gets it when
+        //    SEED_REAL_DATA=true (SEED_DEMO_DATA is the older name of the flag).
+        if (filter_var(env('SEED_REAL_DATA', env('SEED_DEMO_DATA', false)), FILTER_VALIDATE_BOOLEAN)) {
+            $this->call(RealDataSeeder::class);
         }
     }
 }

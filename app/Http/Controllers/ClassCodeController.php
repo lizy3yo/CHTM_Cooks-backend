@@ -167,6 +167,24 @@ class ClassCodeController extends Controller
         ]);
     }
 
+    /** GET /api/courses: the laboratory courses classes can be opened for. */
+    public function getCourses()
+    {
+        $courses = \App\Models\Course::where('is_active', true)->orderBy('year_level')->orderBy('code')->get();
+
+        return response()->json([
+            'courses' => $courses->map(fn($course) => [
+                'id' => (string) $course->id,
+                'code' => $course->code,
+                'title' => $course->title,
+                'program' => $course->program,
+                'yearLevel' => (int) $course->year_level,
+                'semester' => $course->semester,
+                'labUnits' => (int) $course->lab_units,
+            ]),
+        ]);
+    }
+
     public function create(Request $request)
     {
         $validator = Validator::make($request->all(), [

@@ -20,25 +20,6 @@ use App\Http\Controllers\StudentIncidentReportController;
 use App\Http\Controllers\InventoryReportsController;
 use App\Http\Controllers\DataImportController;
 
-use Illuminate\Support\Facades\Artisan;
-
-// Secure route to seed demo data (classes, students, requests, donations, walk-ins)
-// Usage: /api/seed-demo?token=chtm_secure_seed_2026  (safe to rerun, never duplicates)
-Route::get('/seed-demo', function () {
-    if (request('token') !== 'chtm_secure_seed_2026') {
-        return response()->json(['error' => 'Unauthorized'], 401);
-    }
-    try {
-        set_time_limit(120);
-        Artisan::call('db:seed', ['--class' => 'StudentClassSeeder', '--force' => true]);
-        return response("<h2>Demo Data Seeded!</h2><pre>" . Artisan::output() . "</pre>", 200)
-            ->header('Content-Type', 'text/html');
-    } catch (\Throwable $e) {
-        return response("<h2>Error during demo seeding:</h2><pre>" . $e->getMessage() . "</pre>", 500)
-            ->header('Content-Type', 'text/html');
-    }
-});
-
 Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/register', [AuthController::class, 'register']);
@@ -133,6 +114,9 @@ Route::middleware('jwt.auth')->group(function () {
     Route::post('/class-codes/{id}/enrollments', [ClassCodeController::class, 'enrollStudents']);
     Route::delete('/class-codes/{id}/enrollments', [ClassCodeController::class, 'unenrollStudents']);
 
+    // Laboratory courses (from the prospectus) that classes are opened for
+    Route::get('/courses', [ClassCodeController::class, 'getCourses']);
+
     // Borrow Requests
     Route::get('/borrow-requests', [BorrowRequestController::class, 'list']);
     Route::get('/borrow-requests/stream', [BorrowRequestController::class, 'stream']);
@@ -156,6 +140,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/donations/stream', [DonationAndObligationController::class, 'streamDonations']);
     Route::get('/donations/{id}', [DonationAndObligationController::class, 'getDonationById']);
     Route::post('/donations/import', [DonationAndObligationController::class, 'importDonations']);
+    Route::post('/donations/deeds', [DonationAndObligationController::class, 'createDeed']);
     Route::post('/donations/{id}/deed', [DonationAndObligationController::class, 'attachDeed']);
     Route::post('/donations', [DonationAndObligationController::class, 'createDonation']);
     Route::patch('/donations/{id}', [DonationAndObligationController::class, 'addDonationQuantity']);

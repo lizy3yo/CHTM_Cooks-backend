@@ -132,11 +132,17 @@ class AuthController extends Controller
                 'onboardingCompletedAt' => $user->onboarding_completed_at
                     ? $user->onboarding_completed_at->toIso8601String()
                     : null,
+                // True for accounts created with a starting password: the app
+                // sends them to choose their own before anything else.
+                'mustChangePassword' => (bool) $user->must_change_password,
             ]
         ];
 
         // Merge student fields if student
         if ($user->role === 'student') {
+            $response['user']['studentNumber'] = $user->student_number;
+            $response['user']['program'] = $user->program;
+            $response['user']['enrollmentStatus'] = $user->enrollment_status;
             $response['user']['yearLevel'] = $user->year_level;
             $response['user']['block'] = $user->block;
             $response['user']['agreedToTerms'] = $user->agreed_to_terms;
@@ -165,7 +171,9 @@ class AuthController extends Controller
             'password' => 'required|min:8',
             'firstName' => 'required|string|max:100',
             'lastName' => 'required|string|max:100',
-            'role' => 'required|in:student,custodian,instructor,superadmin',
+            // Self-registration is for students only. Staff accounts are
+            // created by a superadmin (UserController::create).
+            'role' => 'required|in:student',
             'yearLevel' => 'required_if:role,student|string|nullable',
             'block' => 'required_if:role,student|string|nullable',
             'agreedToTerms' => 'required_if:role,student|boolean'
@@ -249,9 +257,13 @@ class AuthController extends Controller
             'onboardingCompletedAt' => $user->onboarding_completed_at
                 ? $user->onboarding_completed_at->toIso8601String()
                 : null,
+            'mustChangePassword' => (bool) $user->must_change_password,
         ];
 
         if ($user->role === 'student') {
+            $userResponse['studentNumber'] = $user->student_number;
+            $userResponse['program'] = $user->program;
+            $userResponse['enrollmentStatus'] = $user->enrollment_status;
             $userResponse['yearLevel'] = $user->year_level;
             $userResponse['block'] = $user->block;
             $userResponse['agreedToTerms'] = $user->agreed_to_terms;

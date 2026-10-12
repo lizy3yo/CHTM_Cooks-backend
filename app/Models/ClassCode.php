@@ -15,7 +15,8 @@ class ClassCode extends Model
         'semester',
         'max_enrollment',
         'is_active',
-        'is_archived'
+        'is_archived',
+        'course_id'
     ];
 
     protected $casts = [

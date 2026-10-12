@@ -25,7 +25,8 @@ class Donation extends Model
         'deed_status',
         'deed_file_url',
         'deed_signed_at',
-        'deed_uploaded_by'
+        'deed_uploaded_by',
+        'deed_id'
     ];
 
     protected $casts = [
@@ -38,6 +39,11 @@ class Donation extends Model
     public function item(): BelongsTo
     {
         return $this->belongsTo(InventoryItem::class, 'inventory_item_id');
+    }
+
+    public function deed(): BelongsTo
+    {
+        return $this->belongsTo(DonationDeed::class, 'deed_id');
     }
 
     public function creator(): BelongsTo

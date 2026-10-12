@@ -18,7 +18,13 @@ fi
 # Execute seeding if RUN_SEEDERS environment variable is true
 if [ "${RUN_SEEDERS}" = "true" ]; then
     echo "Running database seeding..."
-    php artisan db:seed --force
+    # SEED_CLASS runs one seeder on its own (e.g. RealDataSeeder), which
+    # leaves the base accounts and their passwords untouched.
+    if [ -n "${SEED_CLASS}" ]; then
+        php artisan db:seed --class="${SEED_CLASS}" --force
+    else
+        php artisan db:seed --force
+    fi
 fi
 
 # Execute the main container CMD

@@ -33,7 +33,13 @@ class UserController extends Controller
             'createdAt' => $u->created_at->toIso8601String(),
             'lastLogin' => $u->last_login ? $u->last_login->toIso8601String() : null,
             'yearLevel' => $u->year_level,
-            'block' => $u->block
+            'block' => $u->block,
+            'studentNumber' => $u->student_number,
+            'middleName' => $u->middle_name,
+            'nameSuffix' => $u->name_suffix,
+            'program' => $u->program,
+            'enrollmentStatus' => $u->enrollment_status,
+            'mustChangePassword' => (bool) $u->must_change_password,
         ];
     }
 
@@ -55,7 +61,8 @@ class UserController extends Controller
             $query->where(function ($q) use ($like) {
                 $q->whereRaw('LOWER(email) LIKE ?', [$like])
                   ->orWhereRaw('LOWER(first_name) LIKE ?', [$like])
-                  ->orWhereRaw('LOWER(last_name) LIKE ?', [$like]);
+                  ->orWhereRaw('LOWER(last_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(student_number) LIKE ?', [$like]);
             });
         }
 
@@ -143,7 +150,11 @@ class UserController extends Controller
             'isActive' => 'sometimes|boolean',
             'role' => 'sometimes|required|in:student,custodian,instructor,superadmin,admin',
             'yearLevel' => 'nullable|string',
-            'block' => 'nullable|string'
+            'block' => 'nullable|string',
+            'middleName' => 'nullable|string|max:100',
+            'studentNumber' => 'nullable|string|max:20|unique:users,student_number,' . $u->id,
+            'program' => 'nullable|string|in:BSHM,BSTM',
+            'enrollmentStatus' => 'nullable|string|in:Officially Enrolled,For Enlistment,Will Not Enroll,Dropped'
         ]);
 
         if ($validator->fails()) {
@@ -151,6 +162,10 @@ class UserController extends Controller
         }
 
         $updateData = [];
+        if ($request->has('middleName')) $updateData['middle_name'] = $request->middleName;
+        if ($request->has('studentNumber')) $updateData['student_number'] = $request->studentNumber ?: null;
+        if ($request->has('program')) $updateData['program'] = $request->program;
+        if ($request->has('enrollmentStatus')) $updateData['enrollment_status'] = $request->enrollmentStatus;
         if ($request->has('firstName')) $updateData['first_name'] = $request->firstName;
         if ($request->has('lastName')) $updateData['last_name'] = $request->lastName;
         if ($request->has('isActive')) $updateData['is_active'] = $request->isActive;
@@ -329,7 +344,13 @@ class UserController extends Controller
             return response()->json(['error' => 'Current password is incorrect'], 400);
         }
 
+        // A starting password has to be replaced by a different one.
+        if ($user->must_change_password && Hash::check($request->newPassword, $user->password)) {
+            return response()->json(['error' => 'Choose a password different from the starting password.'], 400);
+        }
+
         $user->password = Hash::make($request->newPassword);
+        $user->must_change_password = false;
         $user->save();
 
         return response()->json(['success' => true]);

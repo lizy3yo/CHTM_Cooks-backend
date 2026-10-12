@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\Donation;
+use App\Models\DonationDeed;
 use Illuminate\Support\Facades\Schema;
 use App\Models\ReplacementObligation;
 use App\Models\InventoryItem;
@@ -54,14 +55,35 @@ class DonationAndObligationController extends Controller
             'deedStatus' => $donation->deed_status ?? 'pending',
             'deedFileUrl' => $donation->deed_file_url,
             'deedSignedAt' => $donation->deed_signed_at ? $donation->deed_signed_at->toIso8601String() : null,
+            // The deed this line was given under, shared by every item on it.
+            'deed' => $donation->deed ? $this->transformDeed($donation->deed) : null,
+            // A receipt-only line records an amount and adds nothing to stock.
+            'receiptOnly' => (bool) ($donation->deed?->or_number && !$donation->inventory_item_id),
             'createdAt' => $donation->created_at->toIso8601String(),
             'updatedAt' => $donation->updated_at->toIso8601String(),
         ];
     }
 
+    private function transformDeed(DonationDeed $deed): array
+    {
+        return [
+            'id' => (string) $deed->id,
+            'reference' => $deed->reference,
+            'representativeName' => $deed->representative_name,
+            'submitterEmail' => $deed->submitter_email,
+            'studentId' => $deed->student_id ? (string) $deed->student_id : null,
+            'program' => $deed->program,
+            'dateDonated' => $deed->date_donated?->toDateString(),
+            'orNumber' => $deed->or_number,
+            'declaredTotal' => $deed->declared_total !== null ? (float) $deed->declared_total : null,
+            'notes' => $deed->notes,
+            'files' => array_values($deed->files ?? []),
+        ];
+    }
+
     public function getDonations(Request $request)
     {
-        $query = Donation::query()->with(['item', 'creator']);
+        $query = Donation::query()->with(['item', 'creator', 'deed']);
 
         if ($request->filled('search')) {
             $searchVal = trim((string) $request->search);
@@ -69,7 +91,11 @@ class DonationAndObligationController extends Controller
             $query->where(function ($q) use ($like) {
                 $q->whereRaw('LOWER(receipt_number) LIKE ?', [$like])
                   ->orWhereRaw('LOWER(donor_name) LIKE ?', [$like])
-                  ->orWhereRaw('LOWER(item_name) LIKE ?', [$like]);
+                  ->orWhereRaw('LOWER(item_name) LIKE ?', [$like])
+                  ->orWhereHas('deed', function ($deed) use ($like) {
+                      $deed->whereRaw('LOWER(reference) LIKE ?', [$like])
+                           ->orWhereRaw('LOWER(or_number) LIKE ?', [$like]);
+                  });
             });
         }
 
@@ -105,6 +131,10 @@ class DonationAndObligationController extends Controller
 
     public function createDonation(Request $request)
     {
+        if ($denied = $this->denyUnlessManager()) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'inventoryAction' => 'required|in:new_item,add_to_existing',
             'donorName' => 'required|string|max:255',
@@ -198,6 +228,10 @@ class DonationAndObligationController extends Controller
 
     public function addDonationQuantity(Request $request, $id)
     {
+        if ($denied = $this->denyUnlessManager()) {
+            return $denied;
+        }
+
         $donation = Donation::find($id);
         if (!$donation) {
             return response()->json(['error' => 'Donation record not found'], 404);
@@ -238,6 +272,10 @@ class DonationAndObligationController extends Controller
 
     public function updateDonation(Request $request, $id)
     {
+        if ($denied = $this->denyUnlessManager()) {
+            return $denied;
+        }
+
         $donation = Donation::find($id);
         if (!$donation) {
             return response()->json(['error' => 'Donation record not found'], 404);
@@ -288,6 +326,10 @@ class DonationAndObligationController extends Controller
 
     public function deleteDonation($id)
     {
+        if ($denied = $this->denyUnlessManager()) {
+            return $denied;
+        }
+
         $donation = Donation::find($id);
         if (!$donation) {
             return response()->json(['error' => 'Donation record not found'], 404);
@@ -301,13 +343,29 @@ class DonationAndObligationController extends Controller
             }
         }
 
+        $deedId = $donation->deed_id;
         $donation->delete();
+
+        // A deed with no lines left has nothing to describe.
+        if ($deedId && !Donation::where('deed_id', $deedId)->exists()) {
+            DonationDeed::where('id', $deedId)->delete();
+        }
 
         return response()->json(['success' => true, 'message' => 'Donation deleted successfully']);
     }
 
     /** Roles that record and manage donations (admins view only). */
     private const DONATION_MANAGERS = ['custodian', 'instructor', 'superadmin'];
+
+    /** Recording, changing and deleting donations is for the managing roles. */
+    private function denyUnlessManager()
+    {
+        $user = auth()->user();
+        if (!$user || !in_array($user->role, self::DONATION_MANAGERS, true)) {
+            return response()->json(['error' => 'You do not have permission to perform this action.'], 403);
+        }
+        return null;
+    }
 
     private static ?bool $tracksDonationValue = null;
 
@@ -326,18 +384,194 @@ class DonationAndObligationController extends Controller
         return $receiptNumber;
     }
 
+    /** DEED-<year donated>-<running number>. */
+    private function newDeedReference(Carbon $dateDonated): string
+    {
+        $prefix = 'DEED-' . $dateDonated->format('Y') . '-';
+        $last = DonationDeed::where('reference', 'like', $prefix . '%')->orderBy('reference', 'desc')->value('reference');
+        $next = $last ? ((int) substr($last, strlen($prefix))) + 1 : 1;
+
+        do {
+            $reference = $prefix . str_pad((string) $next++, 4, '0', STR_PAD_LEFT);
+        } while (DonationDeed::where('reference', $reference)->exists());
+
+        return $reference;
+    }
+
+    /**
+     * POST /api/donations/deeds
+     *
+     * Record one deed of donation: who gave it, for which program, and every
+     * item on it with its quantity and value. A deed may instead carry only an
+     * official receipt number and an amount, which adds nothing to stock.
+     *
+     * An item whose name matches an inventory item adds to it; otherwise the
+     * item is created. Everything is saved together or not at all.
+     */
+    public function createDeed(Request $request)
+    {
+        if ($denied = $this->denyUnlessManager()) {
+            return $denied;
+        }
+
+        $validator = Validator::make($request->all(), [
+            'representativeName' => 'required|string|max:255',
+            'email' => 'nullable|email|max:255',
+            'program' => 'required|in:BSHM,BSTM',
+            'dateDonated' => 'required|date|before_or_equal:today',
+            'orNumber' => 'nullable|string|max:50',
+            'declaredTotal' => 'nullable|numeric|min:0|max:9999999999',
+            'notes' => 'nullable|string|max:2000',
+            'files' => 'nullable|array|max:5',
+            'files.*' => 'url|max:2048',
+            'items' => 'nullable|array|max:50',
+            'items.*.itemName' => 'required|string|max:255',
+            'items.*.quantity' => 'required|integer|min:1',
+            'items.*.unitCost' => 'nullable|numeric|min:0|max:9999999999',
+            'items.*.unit' => 'nullable|string|max:50',
+            'items.*.category' => 'nullable|string|max:255',
+            'items.*.toolsOrEquipment' => 'nullable|in:Tools,Equipment',
+        ], [], [
+            'representativeName' => 'representative', 'dateDonated' => 'date donated',
+            'orNumber' => 'OR number', 'declaredTotal' => 'total value',
+            'items.*.itemName' => 'item name', 'items.*.quantity' => 'quantity', 'items.*.unitCost' => 'value',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()->first(), 'details' => $validator->errors()], 400);
+        }
+
+        $items = $request->input('items') ?? [];
+        $receiptOnly = count($items) === 0;
+        if ($receiptOnly && (!$request->filled('orNumber') || !$request->filled('declaredTotal'))) {
+            return response()->json(['error' => 'Add at least one item, or enter the OR number and the amount.'], 400);
+        }
+
+        $user = auth()->user();
+        $files = array_values($request->input('files') ?? []);
+        $dateDonated = Carbon::parse($request->dateDonated);
+        $email = $request->filled('email') ? mb_strtolower(trim($request->email)) : null;
+
+        $result = DB::transaction(function () use ($request, $items, $receiptOnly, $user, $files, $dateDonated, $email) {
+            // A representative who is a student is linked to their record.
+            $student = $email ? User::where('role', 'student')->where('email', $email)->first() : null;
+
+            $deed = DonationDeed::create([
+                'reference' => $this->newDeedReference($dateDonated),
+                'representative_name' => trim($request->representativeName),
+                'submitter_email' => $email,
+                'student_id' => $student?->id,
+                'program' => $request->program,
+                'date_donated' => $dateDonated->toDateString(),
+                'or_number' => $request->orNumber,
+                'declared_total' => $request->declaredTotal,
+                'notes' => $request->notes,
+                'files' => $files,
+                'submitted_at' => Carbon::now(),
+                'encoded_by' => $user->id,
+            ]);
+
+            $shared = [
+                'donor_name' => $deed->representative_name,
+                'date' => $dateDonated,
+                'notes' => $request->notes,
+                'created_by' => $user->id,
+                'deed_id' => $deed->id,
+                'deed_status' => $files ? 'signed' : 'pending',
+                'deed_file_url' => $files[0] ?? null,
+                'deed_signed_at' => $files ? Carbon::now() : null,
+                'deed_uploaded_by' => $files ? $user->id : null,
+            ];
+
+            if ($receiptOnly) {
+                Donation::create($shared + [
+                    'receipt_number' => $this->newReceiptNumber(),
+                    'item_name' => 'Cash donation (OR No. ' . $request->orNumber . ')',
+                    'quantity' => 1,
+                    'purpose' => 'Cash donation to CHTM laboratory',
+                    'inventory_action' => 'new_item',
+                    'inventory_item_id' => null,
+                    'unit_cost' => $request->declaredTotal,
+                ]);
+                return $deed;
+            }
+
+            $baselineFollows = !InventoryVariance::available();
+
+            foreach ($items as $row) {
+                $name = trim($row['itemName']);
+                $quantity = (int) $row['quantity'];
+                $unitCost = isset($row['unitCost']) && $row['unitCost'] !== '' ? (float) $row['unitCost'] : null;
+
+                $item = InventoryItem::where('archived', false)
+                    ->whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
+                    ->first();
+
+                if ($item) {
+                    $item->increment('donations', $quantity);
+                    if ($baselineFollows) {
+                        $item->increment('eom_count', $quantity);
+                    }
+                    $action = 'add_to_existing';
+                } else {
+                    // An item's category is its type: Tools or Equipment.
+                    $type = $row['toolsOrEquipment'] ?? 'Tools';
+                    $categoryName = trim((string) ($row['category'] ?? '')) ?: $type;
+                    $category = InventoryCategory::whereRaw('LOWER(name) = ?', [mb_strtolower($categoryName)])->first()
+                        ?? InventoryCategory::create(['name' => $categoryName, 'created_by' => $user->id]);
+
+                    $item = InventoryItem::create([
+                        'name' => $name,
+                        'category' => $category->name,
+                        'category_id' => $category->id,
+                        'tools_or_equipment' => $type,
+                        'quantity' => 0,
+                        'unit_price' => $unitCost,
+                        'donations' => $quantity,
+                        // New this month, so it shows as Over until the month is closed.
+                        'eom_count' => $baselineFollows ? $quantity : 0,
+                        'created_by' => $user->id,
+                    ]);
+                    $category->increment('item_count');
+                    $action = 'new_item';
+                }
+
+                Donation::create($shared + [
+                    'receipt_number' => $this->newReceiptNumber(),
+                    'item_name' => $item->name,
+                    'quantity' => $quantity,
+                    'unit' => $row['unit'] ?? null,
+                    'purpose' => 'Item donation to CHTM laboratory',
+                    'inventory_action' => $action,
+                    'inventory_item_id' => $item->id,
+                    'unit_cost' => $unitCost,
+                ]);
+            }
+
+            return $deed;
+        });
+
+        $lines = Donation::with(['item', 'creator', 'deed'])->where('deed_id', $result->id)->orderBy('id')->get();
+
+        return response()->json([
+            'deed' => $this->transformDeed($result),
+            'donations' => $lines->map(fn($d) => $this->transformDonation($d)),
+        ], 201);
+    }
+
     /**
      * POST /api/donations/{id}/deed
      *
-     * Attach the signed deed of donation. The file itself is uploaded by the
-     * client first; this records where it is and marks the deed as signed.
+     * Attach the signed deed of donation (PDF or image, up to 5 files). The
+     * files are uploaded by the client first; this records where they are and
+     * marks the deed as signed for every item given under it.
      */
     public function attachDeed(Request $request, $id)
     {
-        $user = auth()->user();
-        if (!$user || !in_array($user->role, self::DONATION_MANAGERS, true)) {
-            return response()->json(['error' => 'You do not have permission to perform this action.'], 403);
+        if ($denied = $this->denyUnlessManager()) {
+            return $denied;
         }
+        $user = auth()->user();
 
         $donation = Donation::find($id);
         if (!$donation) {
@@ -345,20 +579,41 @@ class DonationAndObligationController extends Controller
         }
 
         $validator = Validator::make($request->all(), [
-            'fileUrl' => 'required|url|max:2048',
+            'fileUrl' => 'required_without:fileUrls|url|max:2048',
+            'fileUrls' => 'required_without:fileUrl|array|min:1|max:5',
+            'fileUrls.*' => 'url|max:2048',
         ]);
         if ($validator->fails()) {
             return response()->json(['error' => 'Upload the signed deed first.', 'details' => $validator->errors()], 400);
         }
 
-        $donation->update([
-            'deed_status' => 'signed',
-            'deed_file_url' => $request->fileUrl,
-            'deed_signed_at' => Carbon::now(),
-            'deed_uploaded_by' => $user->id,
-        ]);
+        $added = $request->input('fileUrls') ?? [$request->fileUrl];
 
-        return response()->json($this->transformDonation($donation->fresh()));
+        DB::transaction(function () use ($donation, $added, $user) {
+            // A donation recorded before deeds existed gets one of its own.
+            $deed = $donation->deed ?? DonationDeed::create([
+                'reference' => $this->newDeedReference($donation->date ?? $donation->created_at),
+                'representative_name' => $donation->donor_name,
+                'date_donated' => ($donation->date ?? $donation->created_at)->toDateString(),
+                'files' => [],
+                'encoded_by' => $donation->created_by,
+            ]);
+
+            $files = array_slice(array_values(array_unique(array_merge($deed->files ?? [], $added))), 0, 5);
+            $deed->update(['files' => $files]);
+
+            $signed = [
+                'deed_id' => $deed->id,
+                'deed_status' => 'signed',
+                'deed_file_url' => $files[0],
+                'deed_signed_at' => Carbon::now(),
+                'deed_uploaded_by' => $user->id,
+            ];
+            $donation->update($signed);
+            Donation::where('deed_id', $deed->id)->where('id', '!=', $donation->id)->update($signed);
+        });
+
+        return response()->json($this->transformDonation($donation->fresh(['item', 'creator', 'deed'])));
     }
 
     /**

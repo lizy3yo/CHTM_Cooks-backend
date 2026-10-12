@@ -38,6 +38,12 @@ class User extends Authenticatable
         'agreed_to_terms',
         'trust_score',
         'onboarding_completed_at',
+        'student_number',
+        'middle_name',
+        'name_suffix',
+        'program',
+        'enrollment_status',
+        'must_change_password',
     ];
 
     /**
@@ -63,6 +69,7 @@ class User extends Authenticatable
             'email_verified' => 'boolean',
             'agreed_to_terms' => 'boolean',
             'trust_score' => 'integer',
+            'must_change_password' => 'boolean',
             'onboarding_completed_at' => 'datetime',
             'last_login' => 'datetime',
             'email_verification_expires' => 'datetime',

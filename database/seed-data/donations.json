@@ -1,0 +1,160 @@
+{
+  "source": "DEED of DONATION (Responses), Google Form export",
+  "notes": "Two duplicate submissions are folded into the deed they repeat (see each deed's notes). Deeds with no items carry an official receipt number and an amount only.",
+  "deeds": [
+    {
+      "reference": "DEED-2024-0001",
+      "representativeName": "Mark Ethan Joshua Lapuz",
+      "submitterEmail": "navarrofrenzjohn@gmail.com",
+      "program": "BSHM",
+      "dateDonated": "2024-05-13",
+      "submittedAt": "2025-02-13 07:45:01",
+      "declaredTotal": 7390,
+      "files": ["https://drive.google.com/open?id=1RcxZxHSOaiihBt97kG9yTKidwmdgvfmu"],
+      "items": [
+        {"name": "Hanabishi Oven 32L", "quantity": 1, "unitCost": 7390, "type": "Equipment"}
+      ]
+    },
+    {
+      "reference": "DEED-2024-0002",
+      "representativeName": "Kian Fernandez",
+      "submitterEmail": "navarrofrenzjohn@gmail.com",
+      "program": "BSHM",
+      "dateDonated": "2024-05-15",
+      "submittedAt": "2025-02-13 07:41:06",
+      "declaredTotal": 436,
+      "notes": "Submitted twice on the form (07:41 and 07:51) for the same item and amount; recorded once.",
+      "files": [
+        "https://drive.google.com/open?id=1T-wTiKPV6rG9GYz_JGBRncgNOrQvAGy5",
+        "https://drive.google.com/open?id=1K889jOe3M-25h-kmBB3ZiPPmzpM2KGWz"
+      ],
+      "items": [
+        {"name": "Electronic Kitchen Scale (SF-400)", "quantity": 1, "unitCost": 436, "type": "Equipment"}
+      ]
+    },
+    {
+      "reference": "DEED-2024-0003",
+      "representativeName": "Kaye Almera Domingo",
+      "submitterEmail": "navarrofrenzjohn@gmail.com",
+      "program": "BSHM",
+      "dateDonated": "2024-06-03",
+      "submittedAt": "2025-02-13 07:48:06",
+      "declaredTotal": 160,
+      "files": ["https://drive.google.com/open?id=1hQlfaaB1QSHPs0Z6qDAULFdld5bxM6ni"],
+      "items": [
+        {"name": "Stainless Mixing Bowl 18cm", "quantity": 1, "unitCost": 160, "type": "Tools"}
+      ]
+    },
+    {
+      "reference": "DEED-2025-0001",
+      "representativeName": "Christian Jade B. Pascua",
+      "submitterEmail": "202211526@gordoncollege.edu.ph",
+      "program": "BSHM",
+      "dateDonated": "2025-01-10",
+      "submittedAt": "2025-02-05 15:05:55",
+      "declaredTotal": 2000,
+      "notes": "Declared total on the form was Php 2,000.00; quantities x prices come to Php 4,067.50. The same items were also submitted by Joshua Paul Reyes (202210316@gordoncollege.edu.ph, no quantities, declared Php 1,800.00); recorded once.",
+      "files": [
+        "https://drive.google.com/open?id=1JPinI7PxHnKJAb177Pg3VhYm3tGhwMi4",
+        "https://drive.google.com/open?id=1No4dD8q7N5xToadll7va-HomjuRUgsMm"
+      ],
+      "items": [
+        {"name": "Non-stick Pan", "quantity": 2, "unitCost": 450, "type": "Equipment"},
+        {"name": "Special Plate (Round)", "quantity": 4, "unitCost": 215, "type": "Tools"},
+        {"name": "Special Plate (Rectangular)", "quantity": 2, "unitCost": 114.5, "type": "Tools"},
+        {"name": "Sauce Dish", "quantity": 5, "unitCost": 114.5, "type": "Tools"},
+        {"name": "Sauce Container", "quantity": 3, "unitCost": 150, "type": "Tools"},
+        {"name": "Plastic Container", "quantity": 3, "unitCost": 150, "type": "Tools"},
+        {"name": "Big Bowl", "quantity": 1, "unitCost": 79, "type": "Tools"},
+        {"name": "Measuring Cup", "quantity": 1, "unitCost": 59, "type": "Tools"},
+        {"name": "Portable Stove", "quantity": 1, "unitCost": 350, "type": "Equipment"},
+        {"name": "Water Jug (Blue)", "quantity": 1, "unitCost": 118, "type": "Tools"}
+      ]
+    },
+    {
+      "reference": "DEED-2025-0002",
+      "representativeName": "Mary Grace Lastima Marteja",
+      "submitterEmail": "202210020@gordoncollege.edu.ph",
+      "program": "BSHM",
+      "dateDonated": "2025-01-13",
+      "submittedAt": "2025-02-06 16:49:29",
+      "declaredTotal": 620,
+      "files": ["https://drive.google.com/open?id=14qytJ9JoCArH2YUHgK_Qpk63iDZtow0t"],
+      "items": [
+        {"name": "Pasta Maker", "quantity": 1, "unitCost": 620, "type": "Equipment"}
+      ]
+    },
+    {
+      "reference": "DEED-2025-0003",
+      "representativeName": "Ruzzell Ellis F. Sunga",
+      "submitterEmail": "azesunga7@gmail.com",
+      "program": "BSHM",
+      "dateDonated": "2025-01-21",
+      "submittedAt": "2025-02-06 16:53:27",
+      "declaredTotal": 650,
+      "files": ["https://drive.google.com/open?id=1goxV1Of8F7EgQ0LnATs9z29rbpSz1kVq"],
+      "items": [
+        {"name": "Frying Pan", "quantity": 1, "unitCost": 350, "type": "Equipment"},
+        {"name": "Wok", "quantity": 1, "unitCost": 300, "type": "Equipment"}
+      ]
+    },
+    {
+      "reference": "DEED-2025-0004",
+      "representativeName": "Jerome Nomar Pampolino Napuli",
+      "submitterEmail": "202011646@gordoncollege.edu.ph",
+      "program": "BSHM",
+      "dateDonated": "2025-05-22",
+      "submittedAt": "2025-05-22 14:39:06",
+      "declaredTotal": 8700,
+      "files": ["https://drive.google.com/open?id=1MXKml0Z3j-LYwneufH51_f9jwoYZkk2s"],
+      "items": [
+        {"name": "Epson Printer L3210", "quantity": 1, "unitCost": 8700, "type": "Equipment"}
+      ]
+    },
+    {
+      "reference": "DEED-2025-0005",
+      "representativeName": "Nikka Pilares",
+      "submitterEmail": "constantino.carvin@gordoncollege.edu.ph",
+      "program": "BSHM",
+      "dateDonated": "2025-12-08",
+      "submittedAt": "2026-01-12 11:41:00",
+      "orNumber": "22890",
+      "declaredTotal": 19150,
+      "files": [
+        "https://drive.google.com/open?id=1YszKVeBdEMFzECnX4ibc1Hll99nCt6iq",
+        "https://drive.google.com/open?id=1pQbrMkhLZZ5g37sWvBVPXSgKegzIXV4s"
+      ],
+      "items": []
+    },
+    {
+      "reference": "DEED-2025-0006",
+      "representativeName": "Angel Magpuri",
+      "submitterEmail": "constantino.carvin@gordoncollege.edu.ph",
+      "program": "BSHM",
+      "dateDonated": "2025-12-08",
+      "submittedAt": "2026-01-12 11:34:47",
+      "orNumber": "22892",
+      "declaredTotal": 21010,
+      "files": [
+        "https://drive.google.com/open?id=1ZG7LU-vnsxYoUaCXGTB5VQ9CQQYaIRAZ",
+        "https://drive.google.com/open?id=1Sm4zRQq7SAjopktyApvWxqmyLQrbkobH"
+      ],
+      "items": []
+    },
+    {
+      "reference": "DEED-2025-0007",
+      "representativeName": "Ken Isaac Santos",
+      "submitterEmail": "constantino.carvin@gordoncollege.edu.ph",
+      "program": "BSHM",
+      "dateDonated": "2025-12-08",
+      "submittedAt": "2026-01-12 11:38:17",
+      "orNumber": "22893",
+      "declaredTotal": 9050,
+      "files": [
+        "https://drive.google.com/open?id=1mDT0iTYjm-1f5RJZLhZ3lI8cm5WFNhOa",
+        "https://drive.google.com/open?id=1cfamCpLzwplGpB0pPjRpZMeIoH_MktsS"
+      ],
+      "items": []
+    }
+  ]
+}

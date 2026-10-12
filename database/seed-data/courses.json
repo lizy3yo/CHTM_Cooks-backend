@@ -1,0 +1,24 @@
+{
+  "source": "BSHM Prospectus AY 2025-2026 (highlighted laboratory courses)",
+  "program": "BSHM",
+  "courses": [
+    {"code": "HPC 101", "title": "Kitchen Essentials & Basic Food Preparation", "yearLevel": 1, "semester": "Second", "labUnits": 2, "highlighted": true,
+     "purposes": ["Knife skills practical", "Basic stocks and sauces laboratory", "Mise en place drill"]},
+    {"code": "HPC 102", "title": "Fundamentals in Lodging Operations", "yearLevel": 1, "semester": "Second", "labUnits": 1, "highlighted": true,
+     "purposes": ["Guest room setup practical", "Housekeeping amenities laboratory", "Front office simulation"]},
+    {"code": "HME 116", "title": "Rooms Division Management", "yearLevel": 2, "semester": "First", "labUnits": 1, "highlighted": true,
+     "purposes": ["Room service tray setup", "Turndown service practical", "Rooms division simulation"]},
+    {"code": "HPC 105", "title": "Fundamentals in Food Service Operation", "yearLevel": 2, "semester": "Second", "labUnits": 1, "highlighted": true,
+     "purposes": ["Table setup practical", "Sequence of service laboratory", "Food service role play"]},
+    {"code": "HME 102", "title": "Bread and Pastry", "yearLevel": 2, "semester": "Second", "labUnits": 2, "highlighted": true,
+     "purposes": ["Yeast bread laboratory", "Quick breads and cookies practical", "Cake decorating laboratory"]},
+    {"code": "HME 106", "title": "Bar Management & Beverage Management", "yearLevel": 3, "semester": "First", "labUnits": 1, "highlighted": true,
+     "purposes": ["Mocktail mixing practical", "Bar setup laboratory", "Flairtending drill"]},
+    {"code": "HMA 104", "title": "International Cuisine", "yearLevel": 3, "semester": "First", "labUnits": 2, "highlighted": true,
+     "purposes": ["Asian cuisine practical", "Classical French cuisine laboratory", "International plating practical"]},
+    {"code": "HME 109", "title": "Catering Management", "yearLevel": 3, "semester": "Second", "labUnits": 1, "highlighted": true,
+     "purposes": ["Buffet setup practicum", "Banquet plating demo", "Catering event mock service"]},
+    {"code": "HPC 109", "title": "Introduction to Meetings, Incentives, Conferences & Events Management (MICE)", "yearLevel": 4, "semester": "First", "labUnits": 1, "highlighted": false,
+     "purposes": ["Event venue setup practical", "Conference refreshment service", "Mock event laboratory"]}
+  ]
+}

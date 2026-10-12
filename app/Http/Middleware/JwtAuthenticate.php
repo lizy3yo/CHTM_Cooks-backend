@@ -45,6 +45,15 @@ class JwtAuthenticate
         // Bind user to the Laravel Auth guard context
         Auth::setUser($user);
 
+        // An account still on its starting password can only reach its own
+        // profile (to change it) until it has chosen a new one.
+        if ($user->must_change_password && !$request->is('api/auth/*')) {
+            return response()->json([
+                'error' => 'Change your password to continue.',
+                'code' => 'PASSWORD_CHANGE_REQUIRED',
+            ], 403);
+        }
+
         // Role check
         if (!empty($roles)) {
             if (!in_array($user->role, $roles)) {

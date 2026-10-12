@@ -386,6 +386,15 @@ class BorrowRequestController extends Controller
 
         $user = auth()->user();
 
+        // Roster students borrow only while officially enrolled. Accounts with
+        // no enrollment status on record (self-registered) are not affected.
+        if ($user->role === 'student' && $user->enrollment_status && $user->enrollment_status !== 'Officially Enrolled') {
+            return response()->json([
+                'error' => "Your enrollment status is \"{$user->enrollment_status}\". Only officially enrolled students can borrow.",
+                'code' => 'NOT_ENROLLED',
+            ], 403);
+        }
+
         // Check if student has active pending requests
         $hasPending = BorrowRequest::where('student_id', $user->id)
             ->whereIn('status', ['pending_instructor', 'approved_instructor', 'ready_for_pickup', 'pending_return', 'pending_appeal'])
