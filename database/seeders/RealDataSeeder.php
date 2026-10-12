@@ -11,6 +11,7 @@ use App\Models\Donation;
 use App\Models\DonationDeed;
 use App\Models\InventoryCategory;
 use App\Models\InventoryItem;
+use App\Models\ReplacementObligation;
 use App\Models\User;
 use App\Models\WalkInTransaction;
 use Carbon\Carbon;
@@ -27,6 +28,8 @@ use Illuminate\Support\Facades\Hash;
  *   inventory.json  the laboratory's inventory export
  *
  * and replaces the fictional demo data the old StudentClassSeeder created.
+ * It also adds sample activity for the reports: completed requests from the
+ * past ten weeks, and two requests in progress at each stage.
  *
  * Run with:  php artisan db:seed --class=RealDataSeeder
  * Hosted:    set RUN_SEEDERS=true and SEED_REAL_DATA=true, then redeploy
@@ -46,6 +49,8 @@ class RealDataSeeder extends Seeder
     private const FALLBACK_PASSWORD = 'Password@123';
     private const BLOCK_SIZE = 40;
     private const CLASS_CAPACITY = 45;
+    private const HISTORY_PER_CLASS = 3;
+    private const LIVE_PER_STAGE = 2;
 
     /** Only these students are placed in classes, so only they can borrow. */
     private const ENROLLED = 'Officially Enrolled';
@@ -93,7 +98,10 @@ class RealDataSeeder extends Seeder
         $this->tidyCategories();
 
         $inventory = $this->ensureInventory($admin);
-        $requests  = $this->seedBorrowRequests($classes, $catalog['courses'], $instructor, $inventory);
+        $custodian = User::where('role', 'custodian')->orderBy('id')->first() ?? $admin;
+        $cleared   = $this->removeEarlierSampleRequests();
+        $history   = $this->seedHistory($classes, $instructor, $custodian, $admin, $inventory);
+        $live      = $this->seedLiveRequests($classes, $instructor, $custodian, $admin, $inventory);
         $walkIns   = $this->seedWalkIns($classes, $admin, $inventory);
 
         $this->command->info(sprintf(
@@ -105,8 +113,12 @@ class RealDataSeeder extends Seeder
             $stock['created'], $stock['updated']
         ));
         $this->command->info(sprintf(
-            'Deeds: %d (%d new item lines, %d new receipt-only). Borrow requests: %d new. Walk-ins: %d new.',
-            $deeds['deeds'], $deeds['lines'], $deeds['receiptOnly'], $requests, $walkIns
+            'Deeds: %d (%d new item lines, %d new receipt-only). Walk-ins: %d new.',
+            $deeds['deeds'], $deeds['lines'], $deeds['receiptOnly'], $walkIns
+        ));
+        $this->command->info(sprintf(
+            'Requests: %d completed in the past added, %d under review, %d with the custodian, %d released (%d earlier samples removed).',
+            $history, $live['pending_instructor'], $live['approved_instructor'], $live['borrowed'], $cleared
         ));
         $this->command->info(sprintf(
             'Removed fictional data: %d students, %d classes, %d donations, %d walk-ins.',
@@ -595,58 +607,290 @@ class RealDataSeeder extends Seeder
         return $borrowable();
     }
 
-    /** One request awaiting the instructor per class, from a student in that class. */
-    private function seedBorrowRequests(array $classes, array $courses, User $instructor, $inventory): int
+    /**
+     * Sample borrow requests are created by the admin on the student's behalf
+     * (`created_by` is not the student), which is how a rerun tells them from
+     * requests students made themselves.
+     */
+    private function seededRequests()
+    {
+        return BorrowRequest::whereColumn('created_by', '!=', 'student_id');
+    }
+
+    /**
+     * The first version of this seeder opened one pending request per class,
+     * written as if the student had made it. Those are removed: none of them
+     * can be real, because their students have never signed in.
+     */
+    private function removeEarlierSampleRequests(): int
+    {
+        return BorrowRequest::where('status', 'pending_instructor')
+            ->whereColumn('created_by', 'student_id')
+            ->whereIn('student_id', User::where('role', 'student')->whereNotNull('student_number')->whereNull('last_login')->select('id'))
+            ->delete();
+    }
+
+    /** Roster students of a class, in a fixed order. */
+    private function classStudents(ClassCode $class)
+    {
+        return $class->students()->whereNotNull('student_number')->orderBy('last_name')->orderBy('first_name')->get();
+    }
+
+    /** A request with its item lines. Timestamps are set by the caller. */
+    private function makeRequest(array $entry, User $student, User $instructor, User $admin, Carbon $borrowDate, array $fields, $inventory, int $seed): BorrowRequest
+    {
+        $purposes = $entry['course']['purposes'];
+
+        $request = new BorrowRequest($fields + [
+            'student_id'     => $student->id,
+            'instructor_id'  => $instructor->id,
+            'class_code_id'  => $entry['class']->id,
+            'purpose'        => $purposes[$seed % count($purposes)],
+            'usage_location' => 'school',
+            'borrow_date'    => $borrowDate,
+            'return_date'    => $borrowDate->copy()->addDay()->setTime(17, 0),
+            'created_by'     => $admin->id,
+        ]);
+        // Dated when it happened, not when the seeder ran.
+        $request->timestamps = false;
+        $request->created_at = $fields['created_at'] ?? Carbon::now();
+        $request->updated_at = $fields['updated_at'] ?? $request->created_at;
+        $request->save();
+
+        // Fixed choice per request, so a rerun on an empty database gives the same picture.
+        $count = min($inventory->count(), 3 + $seed % 3);
+        for ($i = 0; $i < $count; $i++) {
+            $item = $inventory[($seed * 7 + $i * 13) % $inventory->count()];
+            if ($request->items()->where('item_id', $item->id)->exists()) {
+                continue;
+            }
+            BorrowRequestItem::create([
+                'borrow_request_id' => $request->id,
+                'item_id'           => $item->id,
+                'name'              => $item->name,
+                'quantity'          => max(1, min(1 + ($seed + $i) % 3, $item->max_quantity_per_request ?: 3, $item->quantity + $item->donations)),
+                'category'          => $item->category,
+                'picture'           => $item->picture,
+            ]);
+        }
+
+        return $request;
+    }
+
+    private function event(BorrowRequest $request, string $event, ?User $actor, Carbon $at, ?array $metadata = null): void
+    {
+        if (!BorrowRequestEvent::available()) {
+            return;
+        }
+        BorrowRequestEvent::create([
+            'borrow_request_id' => $request->id,
+            'event'             => $event,
+            'actor_id'          => $actor?->id,
+            'actor_name'        => $actor ? trim($actor->first_name . ' ' . $actor->last_name) : null,
+            'actor_role'        => $actor?->role,
+            'metadata'          => $metadata,
+            'occurred_at'       => $at,
+        ]);
+    }
+
+    /**
+     * Completed requests from the past ten weeks, three per class, so the
+     * reports and analytics have something to show. Each was borrowed and
+     * returned, so stock is unchanged. Most came back on time and in good
+     * condition; a few were late, and a few had one damaged unit that the
+     * student has since replaced.
+     */
+    private function seedHistory(array $classes, User $instructor, User $custodian, User $admin, $inventory): int
     {
         if ($inventory->isEmpty()) {
             return 0;
         }
 
         $created = 0;
-        DB::transaction(function () use ($classes, $instructor, $inventory, &$created) {
+        $weekStart = Carbon::today()->startOfWeek();
+
+        DB::transaction(function () use ($classes, $instructor, $custodian, $admin, $inventory, $weekStart, &$created) {
             foreach ($classes as $index => $entry) {
                 $class = $entry['class'];
-                if (BorrowRequest::where('class_code_id', $class->id)->exists()) {
-                    continue;
+                $students = $this->classStudents($class);
+                $have = $this->seededRequests()->where('class_code_id', $class->id)->whereIn('status', ['returned', 'resolved'])->count();
+
+                for ($n = $have; $n < self::HISTORY_PER_CLASS && $students->isNotEmpty(); $n++) {
+                    $seed = $index * self::HISTORY_PER_CLASS + $n;
+                    $student = $students[($index + $n * 5) % $students->count()];
+
+                    // A weekday, one to ten weeks ago.
+                    $borrowed  = $weekStart->copy()->subWeeks(1 + $seed % 10)->addDays($seed % 5)->setTime(8, 0);
+                    $due       = $borrowed->copy()->addDay()->setTime(17, 0);
+                    $late      = $seed % 9 === 4;
+                    $damaged   = $seed % 20 === 7;
+                    $returned  = $late ? $due->copy()->addDay()->setTime(10, 0) : $due->copy()->subHours(1 + $seed % 3);
+                    $submitted = $borrowed->copy()->subDays(2)->setTime(10, 0);
+                    $approved  = $submitted->copy()->addHours(4);
+                    $ready     = $borrowed->copy()->subDay()->setTime(15, 0);
+                    $replaced  = $returned->copy()->addDays(3)->setTime(9, 0);
+
+                    $request = $this->makeRequest($entry, $student, $instructor, $admin, $borrowed, [
+                        'custodian_id' => $custodian->id,
+                        'status'       => $damaged ? 'resolved' : 'returned',
+                        'approved_at'  => $approved,
+                        'released_at'  => $ready,
+                        'picked_up_at' => $borrowed,
+                        'returned_at'  => $returned,
+                        'missing_at'   => $damaged ? $returned : null,
+                        'resolved_at'  => $damaged ? $replaced : null,
+                        'updated_by'   => $custodian->id,
+                        'created_at'   => $submitted,
+                        'updated_at'   => $damaged ? $replaced : $returned,
+                    ], $inventory, $seed);
+
+                    foreach ($request->items as $line => $item) {
+                        $bad = $damaged && $line === 0 ? 1 : 0;
+                        $item->update([
+                            'inspection_status'      => $bad ? 'damaged' : 'good',
+                            'inspection_date'        => $returned,
+                            'inspected_by'           => $custodian->id,
+                            'inspection_notes'       => $bad ? 'Chipped during the laboratory session.' : null,
+                            'replacement_quantity'   => $bad ?: null,
+                            'due_date'               => $bad ? $returned->copy()->addDays(7) : null,
+                            'good_quantity'          => $item->quantity - $bad,
+                            'damaged_quantity'       => $bad,
+                            'missing_quantity'       => 0,
+                            'over_returned_quantity' => 0,
+                        ]);
+
+                        if ($bad) {
+                            $obligation = new ReplacementObligation([
+                                'borrow_request_id' => $request->id,
+                                'student_id'        => $student->id,
+                                'item_id'           => $item->item_id,
+                                'item_name'         => $item->name,
+                                'item_category'     => $item->category,
+                                'quantity'          => 1,
+                                'type'              => 'damaged',
+                                'status'            => 'replaced',
+                                'amount'            => 1,
+                                'amount_paid'       => 1,
+                                'resolution_type'   => 'replacement',
+                                'resolution_date'   => $replaced,
+                                'resolution_notes'  => 'Replaced with a new unit of the same kind.',
+                                'incident_date'     => $returned,
+                                'incident_notes'    => 'Chipped during the laboratory session.',
+                                'due_date'          => $returned->copy()->addDays(7),
+                                'created_by'        => $custodian->id,
+                                'updated_by'        => $custodian->id,
+                            ]);
+                            $obligation->timestamps = false;
+                            $obligation->created_at = $returned;
+                            $obligation->updated_at = $replaced;
+                            $obligation->save();
+                        }
+                    }
+
+                    $this->event($request, 'submitted', $student, $submitted);
+                    $this->event($request, 'approved', $instructor, $approved);
+                    $this->event($request, 'ready_for_pickup', $custodian, $ready);
+                    $this->event($request, 'picked_up', $custodian, $borrowed);
+                    $this->event($request, 'inspected', $custodian, $returned, ['outcome' => $damaged ? 'item_issue' : 'returned']);
+                    if ($damaged) {
+                        $this->event($request, 'resolved', $custodian, $replaced);
+                    }
+                    $created++;
                 }
-
-                $students = $class->students()->whereNotNull('student_number')->orderBy('last_name')->orderBy('first_name')->get();
-                if ($students->isEmpty()) {
-                    continue;
-                }
-                $student = $students[$index % $students->count()];
-
-                $borrowDate = Carbon::tomorrow()->addDays($index % 2)->setTime(8, 0);
-                $purposes   = $entry['course']['purposes'];
-
-                $request = BorrowRequest::create([
-                    'student_id'     => $student->id,
-                    'instructor_id'  => $instructor->id,
-                    'class_code_id'  => $class->id,
-                    'purpose'        => $purposes[$index % count($purposes)],
-                    'usage_location' => 'school',
-                    'borrow_date'    => $borrowDate,
-                    'return_date'    => $borrowDate->copy()->addDay()->setTime(17, 0),
-                    'status'         => 'pending_instructor',
-                    'created_by'     => $student->id,
-                ]);
-
-                foreach ($inventory->shuffle()->take(min($inventory->count(), rand(3, 5))) as $item) {
-                    BorrowRequestItem::create([
-                        'borrow_request_id' => $request->id,
-                        'item_id'           => $item->id,
-                        'name'              => $item->name,
-                        'quantity'          => $this->quantityFor($item),
-                        'category'          => $item->category,
-                        'picture'           => $item->picture,
-                    ]);
-                }
-
-                BorrowRequestEvent::record($request, 'submitted', $student);
-                $created++;
             }
         });
+
         return $created;
+    }
+
+    /**
+     * Requests in progress, two at each stage: waiting for the instructor,
+     * approved and waiting for the custodian, and released to the student.
+     * A rerun only tops a stage back up to two.
+     */
+    private function seedLiveRequests(array $classes, User $instructor, User $custodian, User $admin, $inventory): array
+    {
+        $made = ['pending_instructor' => 0, 'approved_instructor' => 0, 'borrowed' => 0];
+        if ($inventory->isEmpty() || !$classes) {
+            return $made;
+        }
+
+        // Statuses that count as "still at this stage".
+        $stages = [
+            'pending_instructor'  => ['pending_instructor'],
+            'approved_instructor' => ['approved_instructor', 'ready_for_pickup'],
+            'borrowed'            => BorrowRequest::OUT_STATUSES,
+        ];
+        $active = ['pending_instructor', 'approved_instructor', 'ready_for_pickup', 'borrowed', 'pending_return', 'pending_appeal', 'missing'];
+
+        $now  = Carbon::now();
+        $slot = 0;
+
+        DB::transaction(function () use ($classes, $instructor, $custodian, $admin, $inventory, $stages, $active, $now, &$slot, &$made) {
+            foreach ($stages as $status => $counted) {
+                $have = $this->seededRequests()->whereIn('status', $counted)->count();
+
+                for ($n = $have; $n < self::LIVE_PER_STAGE; $n++) {
+                    // A different class each time, and a student with nothing else in progress.
+                    $student = null;
+                    for ($try = 0; $try < count($classes) && !$student; $try++) {
+                        $entry = $classes[($slot * 9 + $try) % count($classes)];
+                        $student = $this->classStudents($entry['class'])
+                            ->first(fn($s) => !BorrowRequest::where('student_id', $s->id)->whereIn('status', $active)->exists());
+                    }
+                    $slot++;
+                    if (!$student) {
+                        continue;
+                    }
+
+                    $seed = 1000 + $slot;
+                    $submitted = $now->copy()->subDay()->setTime(10 + $slot % 5, 15);
+
+                    if ($status === 'borrowed') {
+                        $borrowDate = Carbon::today()->setTime(8, 0);
+                        $fields = [
+                            'custodian_id' => $custodian->id,
+                            'approved_at'  => $submitted->copy()->addHours(2),
+                            'released_at'  => $submitted->copy()->addHours(4),
+                            'picked_up_at' => $borrowDate,
+                            'updated_by'   => $custodian->id,
+                            'updated_at'   => $borrowDate,
+                        ];
+                    } else {
+                        $borrowDate = Carbon::tomorrow()->addDays($n % 2)->setTime(8, 0);
+                        $fields = $status === 'approved_instructor'
+                            ? ['approved_at' => $submitted->copy()->addHours(2), 'updated_by' => $instructor->id, 'updated_at' => $submitted->copy()->addHours(2)]
+                            : [];
+                    }
+
+                    $request = $this->makeRequest($entry, $student, $instructor, $admin, $borrowDate, $fields + [
+                        'status' => $status, 'created_at' => $submitted,
+                    ], $inventory, $seed);
+
+                    $this->event($request, 'submitted', $student, $submitted);
+                    if ($status !== 'pending_instructor') {
+                        $this->event($request, 'approved', $instructor, $fields['approved_at']);
+                    }
+                    if ($status === 'borrowed') {
+                        $this->event($request, 'ready_for_pickup', $custodian, $fields['released_at']);
+                        $this->event($request, 'picked_up', $custodian, $borrowDate);
+
+                        // The units are with the student, so they leave the shelf
+                        // exactly as they do at pickup: stock first, then donations.
+                        foreach ($request->items as $line) {
+                            $item = InventoryItem::find($line->item_id);
+                            $fromStock = min($line->quantity, max(0, $item->quantity));
+                            $item->quantity -= $fromStock;
+                            $item->donations = max(0, $item->donations - ($line->quantity - $fromStock));
+                            $item->save();
+                        }
+                    }
+                    $made[$status]++;
+                }
+            }
+        });
+
+        return $made;
     }
 
     /** Five walk-ins by enrolled students: three still borrowed, two returned. */

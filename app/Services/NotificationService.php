@@ -377,7 +377,12 @@ class NotificationService
             ]);
 
             // 2. Queue Email sending
-            if ($user->email && ($recipient['emailed'] ?? true)) {
+            // A student who has never signed in cannot have made this request:
+            // it is sample data loaded for the reports, and the address belongs
+            // to a real person, so they get no email about it.
+            $neverSignedIn = $role === 'student' && !$user->last_login;
+
+            if ($user->email && ($recipient['emailed'] ?? true) && !$neverSignedIn) {
                 $isStudent = ($role === 'student');
                 dispatch(function () use ($user, $copy, $code, $statusLabel, $role, $request, $requestItems, $contextNotes, $isStudent) {
                     EmailService::sendBorrowRequestLifecycleEmail([

@@ -242,6 +242,16 @@ class DonationDeedAndRosterTest extends TestCase
         $this->assertTrue($plate->is_required);
         $items = InventoryItem::count();
 
+        // Sample activity: three completed requests per class, two in progress at each stage.
+        $this->assertSame(53 * 3, DB::table('borrow_requests')->whereIn('status', ['returned', 'resolved'])->count());
+        foreach (['pending_instructor', 'approved_instructor', 'borrowed'] as $stage) {
+            $this->assertSame(2, DB::table('borrow_requests')->where('status', $stage)->count(), $stage);
+        }
+        $this->assertSame(0, DB::table('replacement_obligations')->where('status', 'pending')->count());
+        $this->assertGreaterThan(0, DB::table('replacement_obligations')->where('status', 'replaced')->count());
+        $requests = DB::table('borrow_requests')->count();
+        $onShelf = InventoryItem::sum('quantity');
+
         $first = User::where('email', '202610221@gordoncollege.edu.ph')->first();
         $this->assertSame('Abad', $first->last_name);
         $this->assertSame('1st Year', $first->year_level);
@@ -260,6 +270,8 @@ class DonationDeedAndRosterTest extends TestCase
         $this->assertSame(845, User::where('role', 'student')->whereNotNull('student_number')->count());
         $this->assertSame(20, Donation::count());
         $this->assertSame($items, InventoryItem::count());
+        $this->assertSame($requests, DB::table('borrow_requests')->count());
+        $this->assertEquals($onShelf, InventoryItem::sum('quantity'));
         $this->assertEquals($stock, InventoryItem::sum('donations'));
         $this->assertTrue(Hash::check('MyOwn#12345', $first->fresh()->password));
         $this->assertFalse($first->fresh()->must_change_password);
