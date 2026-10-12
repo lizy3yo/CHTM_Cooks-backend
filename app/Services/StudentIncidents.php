@@ -22,6 +22,15 @@ use Illuminate\Support\Facades\DB;
  */
 class StudentIncidents
 {
+    /** Current photo of an inventory item, shown beside each incident. */
+    private static function pictureOf($itemId): ?string
+    {
+        static $pictures = null;
+        $pictures ??= \App\Models\InventoryItem::withTrashed()->pluck('picture', 'id');
+
+        return $itemId ? ($pictures[$itemId] ?? null) : null;
+    }
+
     /**
      * Incident rows, newest first.
      *
@@ -58,6 +67,7 @@ class StudentIncidents
                 'studentId' => (string) $o->student_id,
                 'type' => $o->type,
                 'itemName' => $o->item_name,
+                'picture' => self::pictureOf($o->item_id),
                 'category' => $o->item_category,
                 'quantity' => (int) $o->amount,
                 'outstanding' => max(0, (int) $o->amount - (int) $o->amount_paid),
@@ -91,6 +101,7 @@ class StudentIncidents
                         'studentId' => (string) $t->student_id,
                         'type' => $i->inspection_status,
                         'itemName' => $i->name,
+                        'picture' => self::pictureOf($i->item_id),
                         'category' => $i->category,
                         'quantity' => (int) ($i->replacement_quantity ?? $i->quantity),
                         'outstanding' => null, // walk-ins have no replacement tracking

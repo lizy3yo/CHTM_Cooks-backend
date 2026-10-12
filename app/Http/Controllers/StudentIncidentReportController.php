@@ -200,6 +200,7 @@ class StudentIncidentReportController extends Controller
                 'studentId' => (string) $o->student_id,
                 'studentName' => $o->student ? trim("{$o->student->first_name} {$o->student->last_name}") : 'Unknown Student',
                 'itemName' => $o->item_name,
+                'picture' => \App\Models\InventoryItem::withTrashed()->where('id', $o->item_id)->value('picture'),
                 'type' => $o->type,
                 'outstanding' => max(0, (int) $o->amount - (int) $o->amount_paid),
                 'dueDate' => $o->due_date->toIso8601String(),
