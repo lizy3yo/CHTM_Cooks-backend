@@ -103,6 +103,7 @@ class RealDataSeeder extends Seeder
         $cleared   = $this->removeEarlierSampleRequests();
         $history   = $this->seedHistory($classes, $instructor, $custodian, $admin, $inventory);
         $live      = $this->seedLiveRequests($classes, $instructor, $custodian, $admin, $inventory);
+        $this->removeOutdatedSamples();
         $adjusted  = $this->seedStockAdjustments($custodian, $inventory);
         $sampled   = $this->seedSampleDeeds($classes, $admin, $inventory);
         $walkIns   = $this->seedWalkIns($classes, $admin, $inventory);
@@ -917,6 +918,67 @@ class RealDataSeeder extends Seeder
     private const SAMPLE_MARK = 'sample-data';
 
     /**
+     * The sample dates in use. Plan 2 puts most samples inside the current
+     * month, so the reports show them on their default Month-to-Date view.
+     */
+    private const SAMPLE_PLAN = 2;
+
+    private function sampleAdjustments()
+    {
+        return InventoryActivityLog::where('ip_address', self::SAMPLE_MARK)->get();
+    }
+
+    /**
+     * Take back samples written under an earlier plan, undoing what each did
+     * to the item's counts, so the current plan can be written in their place.
+     */
+    private function removeOutdatedSamples(): int
+    {
+        $since = $this->countingSince();
+        $removed = 0;
+
+        DB::transaction(function () use ($since, &$removed) {
+            foreach ($this->sampleAdjustments() as $log) {
+                if (($log->metadata['plan'] ?? 1) === self::SAMPLE_PLAN) {
+                    continue;
+                }
+                $change = 0;
+                foreach (($log->changes ?? []) as $c) {
+                    $change += (int) ($c['newValue'] ?? 0) - (int) ($c['oldValue'] ?? 0);
+                }
+                $item = InventoryItem::find($log->entity_id);
+                if ($item) {
+                    $update = ['quantity' => max(0, (int) $item->quantity - $change)];
+                    if (Carbon::parse($log->timestamp)->lt($since)) {
+                        $update['eom_count'] = max(0, (int) $item->eom_count - $change);
+                    }
+                    DB::table('inventory_items')->where('id', $item->id)->update($update);
+                }
+                $log->delete();
+                $removed++;
+            }
+
+            foreach (DonationDeed::where('reference', 'like', 'DEED-SAMPLE-0%')->get() as $deed) {
+                foreach (Donation::where('deed_id', $deed->id)->get() as $line) {
+                    $item = $line->inventory_item_id ? InventoryItem::find($line->inventory_item_id) : null;
+                    if ($item) {
+                        $update = ['donations' => max(0, (int) $item->donations - $line->quantity)];
+                        if ($line->created_at->lt($since)) {
+                            $update['eom_count'] = max(0, (int) $item->eom_count - $line->quantity);
+                        }
+                        DB::table('inventory_items')->where('id', $item->id)->update($update);
+                    }
+                    $line->delete();
+                }
+                $deed->delete();
+                $removed++;
+            }
+        });
+
+        return $removed;
+    }
+
+    /**
      * Stock adjustments by the custodian over the past eight weeks: purchases
      * and recount finds that add stock, breakage and disposal that remove it.
      *
@@ -928,21 +990,21 @@ class RealDataSeeder extends Seeder
     {
         // [days ago, change, reason]
         $plan = [
-            [54, +6, 'New purchase: additional units for the laboratory'],
-            [50, -1, 'Broken during cleaning'],
-            [47, +2, 'Found during recount'],
-            [41, -2, 'Worn out, disposed'],
-            [36, +4, 'New purchase: replacement set'],
-            [33, -1, 'Cracked, no longer safe to use'],
-            [27, +1, 'Found during recount'],
-            [22, -1, 'Broken during cleaning'],
-            [16, +3, 'New purchase: additional units for the laboratory'],
-            [9,  -1, 'Rusted, disposed'],
-            [5,  +2, 'Found during recount'],
-            [2,  -1, 'Chipped, removed from use'],
+            [48, +6, 'New purchase: additional units for the laboratory'],
+            [37, -1, 'Broken during cleaning'],
+            [26, +2, 'Found during recount'],
+            [15, -2, 'Worn out, disposed'],
+            [10, +4, 'New purchase: replacement set'],
+            [9,  -1, 'Cracked, no longer safe to use'],
+            [8,  +1, 'Found during recount'],
+            [6,  -1, 'Broken during cleaning'],
+            [5,  +3, 'New purchase: additional units for the laboratory'],
+            [4,  -1, 'Rusted, disposed'],
+            [2,  +2, 'Found during recount'],
+            [1,  -1, 'Chipped, removed from use'],
         ];
 
-        $have = InventoryActivityLog::where('ip_address', self::SAMPLE_MARK)->count();
+        $have = $this->sampleAdjustments()->filter(fn($log) => ($log->metadata['plan'] ?? 1) === self::SAMPLE_PLAN)->count();
         if ($have >= count($plan) || $inventory->isEmpty()) {
             return 0;
         }
@@ -982,7 +1044,7 @@ class RealDataSeeder extends Seeder
                     'user_name'   => trim($custodian->first_name . ' ' . $custodian->last_name),
                     'user_role'   => $custodian->role,
                     'changes'     => [['field' => 'quantity', 'oldValue' => $before, 'newValue' => $before + $change]],
-                    'metadata'    => ['adjustment' => ['type' => $change > 0 ? 'add' : 'subtract', 'reason' => $reason], 'sample' => true],
+                    'metadata'    => ['adjustment' => ['type' => $change > 0 ? 'add' : 'subtract', 'reason' => $reason], 'sample' => true, 'plan' => self::SAMPLE_PLAN],
                     'ip_address'  => self::SAMPLE_MARK,
                     'timestamp'   => $at,
                 ]);
@@ -1003,10 +1065,10 @@ class RealDataSeeder extends Seeder
     {
         // [reference, days ago, [[quantity, value each], ...]]
         $plan = [
-            ['DEED-SAMPLE-0001', 45, [[4, 185], [2, 320]]],
-            ['DEED-SAMPLE-0002', 30, [[6, 95]]],
-            ['DEED-SAMPLE-0003', 12, [[3, 240], [5, 60], [1, 1250]]],
-            ['DEED-SAMPLE-0004', 4,  [[2, 450], [4, 120]]],
+            ['DEED-SAMPLE-2001', 34, [[4, 185], [2, 320]]],
+            ['DEED-SAMPLE-2002', 9,  [[6, 95]]],
+            ['DEED-SAMPLE-2003', 6,  [[3, 240], [5, 60], [1, 1250]]],
+            ['DEED-SAMPLE-2004', 3,  [[2, 450], [4, 120]]],
         ];
 
         if ($inventory->isEmpty() || !$classes) {
