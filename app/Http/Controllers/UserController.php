@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Support\Facades\Http;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use App\Services\StorageService;
@@ -333,11 +334,12 @@ class UserController extends Controller
 
         $validator = Validator::make($request->all(), [
             'currentPassword' => 'required|string',
-            'newPassword' => 'required|string|min:8'
-        ]);
+            // Same rule the profile and first-login forms show.
+            'newPassword' => ['required', 'string', Password::min(8)->mixedCase()->numbers()->symbols()],
+        ], [], ['newPassword' => 'new password']);
 
         if ($validator->fails()) {
-            return response()->json(['error' => 'Validation failed', 'details' => $validator->errors()], 400);
+            return response()->json(['error' => $validator->errors()->first(), 'details' => $validator->errors()], 400);
         }
 
         if (!Hash::check($request->currentPassword, $user->password)) {

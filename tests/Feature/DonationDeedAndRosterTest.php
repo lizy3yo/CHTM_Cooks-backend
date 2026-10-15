@@ -185,6 +185,11 @@ class DonationDeedAndRosterTest extends TestCase
             'currentPassword' => 'Starting#123', 'newPassword' => 'Starting#123',
         ], $headers)->assertStatus(400);
 
+        // It must meet the same complexity rule the forms show.
+        $this->send('PATCH', '/api/auth/profile/password', [
+            'currentPassword' => 'Starting#123', 'newPassword' => 'alllowercase1',
+        ], $headers)->assertStatus(400);
+
         $this->send('PATCH', '/api/auth/profile/password', [
             'currentPassword' => 'Starting#123', 'newPassword' => 'MyOwn#12345',
         ], $headers)->assertStatus(200);
