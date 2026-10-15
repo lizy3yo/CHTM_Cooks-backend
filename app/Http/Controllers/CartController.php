@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\InventoryItem;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
@@ -81,6 +82,9 @@ class CartController extends Controller
      *
      * Add an item to the cart or increment its quantity if it already exists.
      * Caps quantity at maxQuantity.
+     *
+     * With `ifAbsent`, an item already in the cart is left exactly as it is, so
+     * the call is idempotent — sending it twice never raises the quantity.
      */
     public function addItem(Request $request): \Illuminate\Http\JsonResponse
     {
@@ -91,6 +95,7 @@ class CartController extends Controller
             'maxQuantity' => 'required|integer|min:1',
             'categoryId'  => 'nullable|string',
             'picture'     => 'nullable|string',
+            'ifAbsent'    => 'sometimes|boolean',
         ]);
 
         if ($validator->fails()) {
@@ -110,7 +115,9 @@ class CartController extends Controller
             ->where('item_id', $request->itemId)
             ->first();
 
-        if ($existing) {
+        if ($existing && $request->boolean('ifAbsent')) {
+            $result = 'unchanged';
+        } elseif ($existing) {
             $newQty = $existing->quantity + $requestQty;
 
             if ($newQty >= $maxQty) {
@@ -146,6 +153,67 @@ class CartController extends Controller
         $rows     = $this->getCartRows($user->id);
         $response = $this->buildCartResponse($rows);
         $response['result'] = $result;
+
+        return response()->json($response, 200);
+    }
+
+    /**
+     * POST /api/cart/batch
+     *
+     * Add several items in one call, e.g. a "required for lab" set. Only items
+     * missing from the cart are inserted (quantity 1); items already there keep
+     * the quantity the student chose. Idempotent, so a retry or a second click
+     * changes nothing.
+     */
+    public function addItems(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'items'               => 'required|array|min:1|max:100',
+            'items.*.itemId'      => 'required|string',
+            'items.*.name'        => 'required|string|max:255',
+            'items.*.maxQuantity' => 'required|integer|min:1',
+            'items.*.categoryId'  => 'nullable|string',
+            'items.*.picture'     => 'nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(
+                ['error' => 'Validation failed', 'details' => $validator->errors()],
+                400
+            );
+        }
+
+        $user = Auth::user();
+
+        $existingIds = DB::table('student_carts')
+            ->where('user_id', $user->id)
+            ->pluck('item_id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+
+        $rows = collect($request->input('items'))
+            ->unique('itemId')
+            ->reject(fn (array $item) => in_array((string) $item['itemId'], $existingIds, true))
+            ->map(fn (array $item) => [
+                'user_id'      => $user->id,
+                'item_id'      => $item['itemId'],
+                'name'         => $item['name'],
+                'quantity'     => 1,
+                'max_quantity' => (int) $item['maxQuantity'],
+                'category_id'  => $item['categoryId'] ?? null,
+                'picture'      => $item['picture'] ?? null,
+                'added_at'     => now(),
+                'updated_at'   => now(),
+            ])
+            ->values()
+            ->all();
+
+        // Two pages can sync at the same moment; the (user, item) unique key
+        // makes the slower one a no-op instead of a duplicate-key error.
+        $added = empty($rows) ? 0 : DB::table('student_carts')->insertOrIgnore($rows);
+
+        $response = $this->buildCartResponse($this->getCartRows($user->id));
+        $response['added'] = $added;
 
         return response()->json($response, 200);
     }
@@ -200,6 +268,10 @@ class CartController extends Controller
      *
      * Remove a single item when ?itemId= is supplied, or clear the entire
      * cart when the query parameter is absent.
+     *
+     * A required item cannot be removed on its own — every request carries
+     * it. Clearing the whole cart is still allowed (after submitting, or a
+     * form reset, which puts the required items straight back).
      */
     public function deleteFromCart(Request $request): \Illuminate\Http\JsonResponse
     {
@@ -207,6 +279,18 @@ class CartController extends Controller
         $itemId = $request->query('itemId');
 
         if ($itemId) {
+            $isRequired = InventoryItem::where('id', $itemId)
+                ->where('archived', false)
+                ->where('is_required', true)
+                ->exists();
+
+            if ($isRequired) {
+                return response()->json(
+                    ['error' => 'Required items cannot be removed from your request list.'],
+                    422
+                );
+            }
+
             // Remove specific item
             $deleted = DB::table('student_carts')
                 ->where('user_id', $user->id)

@@ -200,6 +200,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/cart/stream', [CartController::class, 'stream']);
     Route::get('/cart', [CartController::class, 'getCart']);
     Route::post('/cart', [CartController::class, 'addItem']);
+    Route::post('/cart/batch', [CartController::class, 'addItems']);
     Route::patch('/cart', [CartController::class, 'updateQuantity']);
     Route::delete('/cart', [CartController::class, 'deleteFromCart']);
 });
