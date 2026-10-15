@@ -140,14 +140,11 @@ TEXT;
      * Build a lightweight user context snapshot using only simple count queries.
      * Used by the AI chat endpoint where response time is critical.
      * Deliberately avoids the expensive StudentStatisticsService computation.
+     * Accepts the already-resolved User to avoid a redundant lookup.
      */
-    public static function buildLightUserContextSnapshot(int $userId, string $role): ?array
+    public static function buildLightUserContextSnapshot(User $user, string $role): ?array
     {
-        $user = User::find($userId);
-        if (!$user) {
-            return null;
-        }
-
+        $userId  = $user->id;
         $metrics = [];
         try {
             if ($role === 'student') {

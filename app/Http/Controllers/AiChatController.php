@@ -47,21 +47,33 @@ class AiChatController extends Controller
             'messages.*.content' => ['required', 'string', 'max:8000'],
         ]);
 
-        $messages = $validated['messages'];
+        // Forward only the most recent turns — a smaller prompt shortens the
+        // model's time-to-first-token. Gemini expects the history to open
+        // with a user turn, so drop any leading assistant messages.
+        $maxHistory = max(1, (int) config('services.gemini.max_history', 20));
+        $messages   = array_slice($validated['messages'], -$maxHistory);
+        while ($messages && $messages[0]['role'] !== 'user') {
+            array_shift($messages);
+        }
+        $messages = $messages ?: [end($validated['messages'])];
 
         // Capture the bearer token now (the Request object is not available
         // inside the StreamedResponse closure on some SAPI configurations).
-        $bearerToken = $request->bearerToken();
-        $apiKey      = config('services.gemini.api_key');
-        $model       = config('services.gemini.model', 'gemini-2.0-flash');
-        $connectMs   = 8000;   // max time to establish connection to Gemini (ms)
+        $bearerToken   = $request->bearerToken();
+        $apiKey        = config('services.gemini.api_key');
+        $model         = config('services.gemini.model', 'gemini-2.0-flash');
+        $fallbackModel = config('services.gemini.fallback_model');
+        $thinkingLevel = config('services.gemini.thinking_level');
+        $connectMs     = 8000;   // max time to establish connection to Gemini (ms)
+        // Abort when the upstream stream stalls (no bytes) for this long.
+        $idleTimeoutSec = max(1, (int) ceil(config('services.gemini.timeout_ms', 25000) / 1000));
 
         // ── 2. Stream everything else inside the closure ──────────────────────
         // Opening the StreamedResponse immediately sends the HTTP 200 +
         // text/event-stream headers to the browser. Context building and the
         // Gemini request happen here so the client never blocks waiting for
         // pre-flight DB work.
-        return new StreamedResponse(function () use ($messages, $bearerToken, $apiKey, $model, $connectMs) {
+        return new StreamedResponse(function () use ($messages, $bearerToken, $apiKey, $model, $fallbackModel, $thinkingLevel, $connectMs, $idleTimeoutSec) {
             // Disable PHP output buffering so every echo/flush reaches the
             // browser without waiting for a buffer threshold.
             while (ob_get_level() > 0) {
@@ -84,7 +96,7 @@ class AiChatController extends Controller
             $contextSnapshot = null;
             if ($user) {
                 try {
-                    $contextSnapshot = AiChatService::buildLightUserContextSnapshot($user->id, $role);
+                    $contextSnapshot = AiChatService::buildLightUserContextSnapshot($user, $role);
                 } catch (\Throwable $e) {
                     Log::warning('AiChat: Could not build user context snapshot', [
                         'userId' => $user->id,
@@ -115,76 +127,38 @@ class AiChatController extends Controller
                 ],
             ];
 
-            $geminiUrl = sprintf(
-                'https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s',
-                $model,
-                $apiKey
-            );
+            // ── 2e. Stream Gemini SSE → client (with model fallback) ──────────
+            // Switch to the fallback model only when the primary is overloaded
+            // (503) or out of quota (429) AND nothing has reached the client
+            // yet — retrying mid-stream would duplicate text.
+            $models = array_values(array_unique(array_filter([$model, $fallbackModel])));
 
-            // ── 2e. Stream Gemini SSE → client ────────────────────────────────
-            $ch = curl_init($geminiUrl);
-            curl_setopt_array($ch, [
-                CURLOPT_POST              => true,
-                CURLOPT_POSTFIELDS        => json_encode($payload),
-                CURLOPT_HTTPHEADER        => ['Content-Type: application/json'],
-                // Connection timeout only — no total transfer timeout so long
-                // streaming responses are never truncated mid-sentence.
-                CURLOPT_CONNECTTIMEOUT_MS => $connectMs,
-                CURLOPT_RETURNTRANSFER    => false,
-                CURLOPT_WRITEFUNCTION     => function ($curl, $chunk) {
-                    // Gemini SSE line format:
-                    // data: {"candidates":[{"content":{"parts":[{"text":"..."}],...}},...]}
-                    //
-                    // Re-emit as OpenAI-compatible delta so the frontend reader
-                    // requires zero changes.
-                    $lines = explode("\n", $chunk);
-                    foreach ($lines as $line) {
-                        $line = trim($line);
-                        if (!str_starts_with($line, 'data:')) {
-                            continue;
-                        }
+            foreach ($models as $index => $activeModel) {
+                $result = $this->streamGeminiAttempt(
+                    $activeModel, $apiKey, $payload, $thinkingLevel, $connectMs, $idleTimeoutSec
+                );
 
-                        $raw = trim(substr($line, 5));
+                $retryable = !$result['emitted'] && in_array($result['httpCode'], [429, 503], true);
+                if ($retryable && isset($models[$index + 1])) {
+                    Log::warning('AiChat: Model unavailable, switching to fallback', [
+                        'model'    => $activeModel,
+                        'httpCode' => $result['httpCode'],
+                        'fallback' => $models[$index + 1],
+                    ]);
+                    continue;
+                }
 
-                        if ($raw === '[DONE]') {
-                            echo "data: [DONE]\n\n";
-                            flush();
-                            break;
-                        }
+                if ($index > 0 && $result['emitted']) {
+                    Log::info('AiChat: Response served by fallback model', ['model' => $activeModel]);
+                }
+                break;
+            }
 
-                        $decoded = json_decode($raw, true);
-                        if (!$decoded) {
-                            continue;
-                        }
-
-                        $text = $decoded['candidates'][0]['content']['parts'][0]['text'] ?? null;
-                        if ($text === null) {
-                            continue;
-                        }
-
-                        echo 'data: ' . json_encode([
-                            'choices' => [[
-                                'delta' => ['content' => $text],
-                            ]],
-                        ]) . "\n\n";
-                        flush();
-                    }
-
-                    return strlen($chunk);
-                },
-            ]);
-
-            curl_exec($ch);
-
-            $curlError = curl_errno($ch) ? curl_error($ch) : null;
-            $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            unset($ch); // curl_close() deprecated since PHP 8.5; handle freed automatically on unset
-
-            if ($curlError || ($httpCode && $httpCode >= 400)) {
+            if ($result['curlError'] || $result['httpCode'] >= 400) {
                 Log::error('AiChat: Gemini streaming error', [
-                    'curlError' => $curlError,
-                    'httpCode'  => $httpCode,
-                    'model'     => $model,
+                    'curlError' => $result['curlError'],
+                    'httpCode'  => $result['httpCode'],
+                    'model'     => $activeModel,
                 ]);
                 echo 'data: ' . json_encode([
                     'error' => 'AI service is temporarily unavailable. Please try again.',
@@ -200,6 +174,115 @@ class AiChatController extends Controller
             'X-Accel-Buffering' => 'no',   // Disable Nginx proxy buffering
             'Connection'        => 'keep-alive',
         ]);
+    }
+
+    /**
+     * Stream one Gemini model's SSE response to the client, re-emitted as
+     * OpenAI-compatible deltas.
+     *
+     * Error responses (HTTP >= 400) are never echoed, so the caller can retry
+     * on another model while nothing has reached the client yet.
+     *
+     * @return array{emitted: bool, httpCode: int, curlError: ?string}
+     */
+    private function streamGeminiAttempt(
+        string $model,
+        string $apiKey,
+        array $payload,
+        ?string $thinkingLevel,
+        int $connectMs,
+        int $idleTimeoutSec
+    ): array {
+        // Gemini 3 reasons at "high" by default, delaying the first token
+        // by 1–3 s and consuming the output-token budget. A support
+        // assistant does not need deep reasoning, so cap it. Older model
+        // families reject thinkingLevel, hence the model check.
+        if ($thinkingLevel && str_starts_with($model, 'gemini-3')) {
+            $payload['generationConfig']['thinkingConfig'] = ['thinkingLevel' => $thinkingLevel];
+        }
+
+        $geminiUrl = sprintf(
+            'https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s',
+            $model,
+            $apiKey
+        );
+
+        $emitted = false;
+
+        $ch = curl_init($geminiUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST              => true,
+            CURLOPT_POSTFIELDS        => json_encode($payload),
+            CURLOPT_HTTPHEADER        => ['Content-Type: application/json'],
+            // Connection timeout only — no total transfer timeout so long
+            // streaming responses are never truncated mid-sentence.
+            CURLOPT_CONNECTTIMEOUT_MS => $connectMs,
+            // Idle timeout instead: abort if the stream stalls entirely,
+            // so the client receives an error rather than hanging.
+            CURLOPT_LOW_SPEED_LIMIT   => 1,
+            CURLOPT_LOW_SPEED_TIME    => $idleTimeoutSec,
+            CURLOPT_RETURNTRANSFER    => false,
+            CURLOPT_WRITEFUNCTION     => function ($curl, $chunk) use (&$emitted) {
+                // Error bodies are plain JSON, not SSE. Swallow them so the
+                // caller can still fall back to another model cleanly.
+                if (curl_getinfo($curl, CURLINFO_RESPONSE_CODE) >= 400) {
+                    return strlen($chunk);
+                }
+
+                // Gemini SSE line format:
+                // data: {"candidates":[{"content":{"parts":[{"text":"..."}],...}},...]}
+                //
+                // Re-emit as OpenAI-compatible delta so the frontend reader
+                // requires zero changes.
+                $lines = explode("\n", $chunk);
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if (!str_starts_with($line, 'data:')) {
+                        continue;
+                    }
+
+                    $raw = trim(substr($line, 5));
+
+                    if ($raw === '[DONE]') {
+                        echo "data: [DONE]\n\n";
+                        flush();
+                        break;
+                    }
+
+                    $decoded = json_decode($raw, true);
+                    if (!$decoded) {
+                        continue;
+                    }
+
+                    $text = $decoded['candidates'][0]['content']['parts'][0]['text'] ?? null;
+                    if ($text === null) {
+                        continue;
+                    }
+
+                    echo 'data: ' . json_encode([
+                        'choices' => [[
+                            'delta' => ['content' => $text],
+                        ]],
+                    ]) . "\n\n";
+                    flush();
+                    $emitted = true;
+                }
+
+                return strlen($chunk);
+            },
+        ]);
+
+        curl_exec($ch);
+
+        $curlError = curl_errno($ch) ? curl_error($ch) : null;
+        $httpCode  = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch); // curl_close() deprecated since PHP 8.5; handle freed automatically on unset
+
+        return [
+            'emitted'   => $emitted,
+            'httpCode'  => $httpCode,
+            'curlError' => $curlError,
+        ];
     }
 
     /**
