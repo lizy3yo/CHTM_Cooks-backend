@@ -52,16 +52,13 @@ class InventoryController extends Controller
      * Transform Item to frontend representation
      * @param InventoryItem|\stdClass $item
      * @param array|null $availability  date => figures, from AvailabilityService
+     * @param int|null $released  units out on loan; looked up when not supplied
      * @return array
      */
-    private function transformItem($item, ?array $availability = null)
+    private function transformItem($item, ?array $availability = null, ?int $released = null)
     {
-        $released = (int) \App\Models\BorrowRequestItem::where('item_id', $item->id)
-            ->whereHas('borrowRequest', function ($q) {
-                $q->whereIn('status', ['borrowed', 'pending_return', 'pending_appeal']);
-            })
-            ->sum('quantity');
-            
+        $released ??= $this->releasedCounts([(int) $item->id])[(int) $item->id] ?? 0;
+
         $available = (int) (($item->quantity ?? 0) + ($item->donations ?? 0));
 
         return [
@@ -94,6 +91,49 @@ class InventoryController extends Controller
             'createdAt' => $item->created_at->toIso8601String(),
             'updatedAt' => $item->updated_at->toIso8601String(),
         ];
+    }
+
+    /**
+     * Units of each item currently out on loan, in one grouped query.
+     *
+     * @param int[] $itemIds
+     * @return array<int, int>  item id => units released
+     */
+    private function releasedCounts(array $itemIds): array
+    {
+        if (empty($itemIds)) {
+            return [];
+        }
+
+        return \App\Models\BorrowRequestItem::query()
+            ->whereIn('item_id', $itemIds)
+            ->whereHas('borrowRequest', function ($q) {
+                $q->whereIn('status', ['borrowed', 'pending_return', 'pending_appeal']);
+            })
+            ->groupBy('item_id')
+            ->selectRaw('item_id, SUM(quantity) as released')
+            ->pluck('released', 'item_id')
+            ->mapWithKeys(fn ($total, $id) => [(int) $id => (int) $total])
+            ->all();
+    }
+
+    /**
+     * Transform a list of items. Loan counts are read for the whole list at
+     * once — reading them per item cost one query per row, which made a
+     * 200-item catalog page take several seconds.
+     *
+     * @param \Illuminate\Support\Collection $items
+     * @param array $availability  item id => (date => figures)
+     */
+    private function transformItems($items, array $availability = []): \Illuminate\Support\Collection
+    {
+        $released = $this->releasedCounts($items->pluck('id')->map(fn ($id) => (int) $id)->all());
+
+        return $items->map(fn ($item) => $this->transformItem(
+            $item,
+            $availability[(int) $item->id] ?? null,
+            $released[(int) $item->id] ?? 0
+        ))->values();
     }
 
     /**
@@ -219,7 +259,7 @@ class InventoryController extends Controller
         // ── Response ─────────────────────────────────────────────────────────
         return response()->json([
             'categories' => $categories->map(fn ($c) => $this->transformCategory($c))->values(),
-            'items'      => $items->map(fn ($i) => $this->transformItem($i, $availability[(int) $i->id] ?? null))->values(),
+            'items'      => $this->transformItems($items, $availability),
             'total'      => $totalItems,
             'page'       => $page,
             'limit'      => $limit,
@@ -439,7 +479,7 @@ class InventoryController extends Controller
         $availability = $dates ? AvailabilityService::forDates($items, $dates) : [];
 
         return response()->json([
-            'items' => $items->map(fn($item) => $this->transformItem($item, $availability[(int) $item->id] ?? null)),
+            'items' => $this->transformItems($items, $availability),
             'total' => $total,
             'page' => $page,
             'limit' => $limit,
@@ -833,7 +873,7 @@ class InventoryController extends Controller
     {
         $items = InventoryItem::where('is_required', true)->where('archived', false)->get();
         return response()->json([
-            'items' => $items->map(fn($item) => $this->transformItem($item)),
+            'items' => $this->transformItems($items),
             'total' => $items->count(),
             'meta' => [
                 'cached' => false,
@@ -874,7 +914,7 @@ class InventoryController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Bulk required status updated successfully',
-            'items' => $updatedItems->map(fn($item) => $this->transformItem($item)),
+            'items' => $this->transformItems($updatedItems),
             'updatedCount' => $updatedItems->count()
         ]);
     }
@@ -905,7 +945,7 @@ class InventoryController extends Controller
         $items = $query->skip(($page - 1) * $limit)->take($limit)->get();
 
         return response()->json([
-            'items' => $items->map(fn($item) => $this->transformItem($item)),
+            'items' => $this->transformItems($items),
             'total' => $total,
             'page' => $page,
             'limit' => $limit,
